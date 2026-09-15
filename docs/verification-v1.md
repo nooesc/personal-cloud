@@ -50,6 +50,8 @@ GitHub/Cloudflare protocol, signature, ownership, encryption, retry, and failure
 
 The live API omitted the optional connector `config_version`. The control plane now also checks cloudflared's own successful configuration acknowledgement, tied to the active connector UUID and allocation task start. Persisted checkpoints survive log rotation; missing or stale evidence keeps the previous deployment serving.
 
+HTTP health probes explicitly close their connections. The live Python app intermittently closed idle connections at the probe interval; ten consecutive probes passed after the connection-reuse fix.
+
 ## Repeat locally
 
 ```sh

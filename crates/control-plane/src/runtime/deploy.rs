@@ -413,7 +413,8 @@ fn application_job(
         task["Config"]["auth"] = json!({"username":username,"password":password});
     }
     task["Resources"] = json!({"CPU":service["cpu_mhz"].as_i64().unwrap_or(500),"MemoryMB":service["memory_mb"].as_i64().unwrap_or(256)});
-    task["Services"] = json!([{"Name":format!("pc-{service_id}"),"Provider":"nomad","PortLabel":"http","Checks":[{"Name":"ready","Type":"http","Path":service["health_path"].as_str().unwrap_or("/"),"Interval":5000000000_u64,"Timeout":2000000000_u64}]}]);
+    // A probe must not race an application's idle keep-alive timeout and report a false EOF.
+    task["Services"] = json!([{"Name":format!("pc-{service_id}"),"Provider":"nomad","PortLabel":"http","Checks":[{"Name":"ready","Type":"http","Header":{"Connection":["close"]},"Path":service["health_path"].as_str().unwrap_or("/"),"Interval":5000000000_u64,"Timeout":2000000000_u64}]}]);
     Ok(job)
 }
 struct BuildInput<'a> {

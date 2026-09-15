@@ -46,7 +46,7 @@ For a proxy on another host or container network, deliberately choose the host b
 
 The installer supports **Ubuntu 22.04/24.04 and Debian 12/13 with systemd**, on amd64 or arm64. It installs Docker, Nomad, and WireGuard, verifies release archive checksums, and runs the agent as a system service. Builder machines also install BuildKit. macOS machines require a Linux VM; see [fleet setup](infra/README.md).
 
-**Published release:** [v0.1.1](https://github.com/nooesc/personal-cloud/releases/tag/v0.1.1) includes agent downloads and public API, web, and builder images. Both `ghcr.io/nooesc/personal-cloud-api` and `ghcr.io/nooesc/personal-cloud-web` support Linux amd64 and arm64. Anonymous image pulls and a fresh default `bash scripts/start.sh` installation were verified: the published images served the dashboard, API, authenticated WebSockets, and persistent encrypted data without registry login or a source-build override. The `latest` API/web tags currently resolve to v0.1.1.
+**Published release:** [v0.1.2](https://github.com/nooesc/personal-cloud/releases/tag/v0.1.2) includes agent downloads and public API, web, and builder images. Both `ghcr.io/nooesc/personal-cloud-api` and `ghcr.io/nooesc/personal-cloud-web` support Linux amd64 and arm64. Anonymous image pulls and a fresh default `bash scripts/start.sh` installation were verified: the published images served the dashboard, API, authenticated WebSockets, and persistent encrypted data without registry login or a source-build override. The `latest` API/web tags currently resolve to v0.1.2.
 
 The default image tag is `latest`. Set `PC_VERSION=vX.Y.Z` in `.env.production` to pin both control-plane images to a release. To build an unpublished checkout or verify local changes instead:
 
@@ -99,7 +99,7 @@ This is a single-owner, single-control-plane implementation. It does not include
 
 The production package has been checked in an isolated Compose stack: built SSR and static assets, same-origin HTTP and WebSocket routing, owner sessions, origin rejection, persisted service settings, encrypted secrets, and restart recovery all passed. The local checks and disposable Linux harness also exercise API persistence, builds, scheduling, and failure handling. Live scoped Cloudflare/R2 credentials, an R2-backed image build/deployment, and public Tunnel/DNS/TLS routing have also been verified against a real account. These checks also do not prove a user's GitHub permissions, firewall, or multi-machine connectivity. A production deployment is ready only after its own provider connections, machine enrollment, immutable deployment, public route, and application database are observed working. The ten-minute clean-machine onboarding target is a release acceptance criterion, not an asserted timing guarantee.
 
-See [V1 verification](docs/verification-v1.md) for the executed acceptance checks and the connector acknowledgement fix in v0.1.1.
+See [V1 verification](docs/verification-v1.md) for the executed acceptance checks and the connector acknowledgement fix in v0.1.2.
 
 ## Development
 
