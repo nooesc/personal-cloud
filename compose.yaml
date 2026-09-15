@@ -1,0 +1,19 @@
+name: personal-cloud
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: personal_cloud
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run pnpm dev to generate local credentials}
+      POSTGRES_DB: personal_cloud
+    ports:
+      - "127.0.0.1:55438:5432"
+    volumes:
+      - control-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U personal_cloud"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+volumes:
+  control-data:

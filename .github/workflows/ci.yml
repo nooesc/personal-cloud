@@ -1,0 +1,38 @@
+name: Verify foundation
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          components: rustfmt, clippy
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: Swatinem/rust-cache@v2
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: cargo clippy --workspace -- -D warnings
+      - name: Verify API and persistence
+        shell: bash
+        run: |
+          python3 scripts/setup-env.py
+          docker compose up -d --wait postgres
+          cargo build --workspace
+          mkdir -p work
+          ./target/debug/personal-cloud-api > work/api.log 2>&1 &
+          api_pid=$!
+          trap 'kill "$api_pid" || true; docker compose stop' EXIT
+          for attempt in {1..30}; do
+            if curl -fsS http://127.0.0.1:4311/api/health > /dev/null; then break; fi
+            sleep 1
+          done
+          pnpm smoke

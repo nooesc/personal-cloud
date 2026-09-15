@@ -1,0 +1,16 @@
+{
+  "name": "personal-cloud",
+  "private": true,
+  "packageManager": "pnpm@10.20.0",
+  "scripts": {
+    "dev": "bash scripts/dev.sh",
+    "dev:web": "pnpm --filter @personal-cloud/web dev",
+    "build": "pnpm --filter @personal-cloud/web build",
+    "typecheck": "pnpm --filter @personal-cloud/web typecheck",
+    "check": "cargo fmt --check && cargo test --workspace && pnpm build && pnpm typecheck",
+    "smoke": "python3 scripts/smoke.py"
+  },
+  "devDependencies": {
+    "prettier": "^3.9.6"
+  }
+}

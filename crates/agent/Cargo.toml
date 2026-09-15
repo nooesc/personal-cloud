@@ -1,0 +1,14 @@
+[package]
+name = "personal-cloud-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+personal-cloud-core = { path = "../core" }
+sysinfo = "0.33"
+clap = { version = "4", features = ["derive", "env"] }
