@@ -1,6 +1,7 @@
 mod database;
 mod deploy;
 mod observability;
+mod tunnel;
 use crate::{ApiError, ApiResult, App, crypto, invalid, owner};
 use anyhow::{Context, ensure};
 use axum::{
@@ -15,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::Row;
 use std::time::Duration;
+pub use tunnel::acknowledged_configurations;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -46,7 +46,9 @@ The first two-client harness shares a Docker daemon to simulate node loss cheapl
 
 ## Public-provider boundary
 
-GitHub/Cloudflare protocol, signature, ownership, encryption, retry, and failure paths have executable tests. Live user-account Cloudflare credentials, an owned domain, and an R2 bucket were not supplied during this verification. Therefore this record does **not** assert a successful live R2-backed deployment, public DNS/TLS route, or the full zero-to-public-app ten-minute onboarding target. Those checks require connecting the deployment's own provider accounts through Settings.
+GitHub/Cloudflare protocol, signature, ownership, encryption, retry, and failure paths have executable tests. After connecting a real account, scoped Cloudflare and bucket-specific R2 credentials passed discovery and signed bucket validation. An R2-backed registry was provisioned on the installed fleet. A fresh source build pushed an immutable image through that registry and served its application over a newly provisioned Cloudflare Tunnel and public HTTPS hostname. The full zero-to-public-app ten-minute onboarding target remains unmeasured.
+
+The live API omitted the optional connector `config_version`. The control plane now also checks cloudflared's own successful configuration acknowledgement, tied to the active connector UUID and allocation task start. Persisted checkpoints survive log rotation; missing or stale evidence keeps the previous deployment serving.
 
 ## Repeat locally
 

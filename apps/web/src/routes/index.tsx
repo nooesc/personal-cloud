@@ -867,7 +867,7 @@ function App() {
               <Cloud size={13} /> A cloud of your own.
             </span>
             <span>
-              Personal Cloud <span className="muted">/</span> v0.1.0
+              Personal Cloud <span className="muted">/</span> v0.1.1
             </span>
           </footer>
         </main>

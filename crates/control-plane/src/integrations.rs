@@ -1121,7 +1121,7 @@ pub async fn refresh_service_domains(app: &App, service_id: Uuid) -> anyhow::Res
             if !applied {
                 let version = version
                     .ok_or_else(|| anyhow::anyhow!("Cloudflare omitted configuration version"))?;
-                wait_for_tunnel_configuration(&provider, &base, version).await?;
+                wait_for_tunnel_configuration(app, &provider, &base, &tunnel, version).await?;
                 sqlx::query(
                     "UPDATE domains SET configuration_applied=true,updated_at=now() WHERE id=$1",
                 )
@@ -1155,15 +1155,32 @@ fn connectors_applied(clients: &Value, version: i64) -> bool {
         })
 }
 async fn wait_for_tunnel_configuration(
+    app: &App,
     provider: &Provider<'_>,
     base: &str,
+    tunnel: &str,
     version: i64,
 ) -> anyhow::Result<()> {
     tokio::time::timeout(Duration::from_secs(45), async {
         loop {
-            let clients = provider
+            let mut clients = provider
                 .cf(Method::GET, &format!("{base}/connections"), None)
                 .await?;
+            if connectors_applied(&clients, version) {
+                return Ok(());
+            }
+            if let Ok(observed) = crate::runtime::acknowledged_configurations(app, tunnel).await
+                && let Some(clients) = clients.as_array_mut()
+            {
+                for client in clients {
+                    // An explicit provider version remains authoritative, including a stale one.
+                    if client["config_version"].is_null()
+                        && let Some(version) = client["id"].as_str().and_then(|id| observed.get(id))
+                    {
+                        client["config_version"] = json!(version);
+                    }
+                }
+            }
             if connectors_applied(&clients, version) {
                 return Ok(());
             }
