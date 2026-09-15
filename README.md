@@ -46,7 +46,7 @@ For a proxy on another host or container network, deliberately choose the host b
 
 The installer supports **Ubuntu 22.04/24.04 and Debian 12/13 with systemd**, on amd64 or arm64. It installs Docker, Nomad, and WireGuard, verifies release archive checksums, and runs the agent as a system service. Builder machines also install BuildKit. macOS machines require a Linux VM; see [fleet setup](infra/README.md).
 
-**Published release:** [v0.1.0](https://github.com/nooesc/personal-cloud/releases/tag/v0.1.0) includes agent downloads and public API, web, and builder images. Both `ghcr.io/nooesc/personal-cloud-api` and `ghcr.io/nooesc/personal-cloud-web` support Linux amd64 and arm64. Anonymous image pulls and a fresh default `bash scripts/start.sh` installation were verified: the published images served the dashboard, API, authenticated WebSockets, and persistent encrypted data without registry login or a source-build override. The `latest` API/web tags currently resolve to v0.1.0.
+**Published release:** [v0.1.1](https://github.com/nooesc/personal-cloud/releases/tag/v0.1.1) includes agent downloads and public API, web, and builder images. Both `ghcr.io/nooesc/personal-cloud-api` and `ghcr.io/nooesc/personal-cloud-web` support Linux amd64 and arm64. Anonymous image pulls and a fresh default `bash scripts/start.sh` installation were verified: the published images served the dashboard, API, authenticated WebSockets, and persistent encrypted data without registry login or a source-build override. The `latest` API/web tags currently resolve to v0.1.1.
 
 The default image tag is `latest`. Set `PC_VERSION=vX.Y.Z` in `.env.production` to pin both control-plane images to a release. To build an unpublished checkout or verify local changes instead:
 
