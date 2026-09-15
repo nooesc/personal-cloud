@@ -1,3 +1,5 @@
+mod provision;
+
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
 use personal_cloud_core::MachineReport;
@@ -7,7 +9,7 @@ use sysinfo::{Disks, System};
 
 #[derive(Parser)]
 #[command(
-    about = "Connect a machine to your Personal Cloud. Reports inventory; does not install runtimes or alter networking."
+    about = "Connect a machine to Personal Cloud; --provision explicitly configures the private Linux runtime."
 )]
 struct Args {
     #[arg(long, env = "PC_API", default_value = "http://127.0.0.1:4311")]
@@ -18,6 +20,12 @@ struct Args {
     state: PathBuf,
     #[arg(long)]
     once: bool,
+    #[arg(long)]
+    provision: bool,
+    #[arg(long, requires = "provision")]
+    rotate_wireguard: bool,
+    #[arg(long, env = "PC_WIREGUARD_ENDPOINT")]
+    wireguard_endpoint: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 struct Identity {
@@ -26,7 +34,7 @@ struct Identity {
     api: String,
 }
 
-async fn report(client: &reqwest::Client) -> MachineReport {
+async fn report(client: &reqwest::Client, endpoint: &Option<String>) -> MachineReport {
     let mut system = System::new_all();
     tokio::time::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL).await;
     system.refresh_cpu_usage();
@@ -77,6 +85,12 @@ async fn report(client: &reqwest::Client) -> MachineReport {
         disk_used,
         docker,
         nomad,
+        nomad_node_id: provision::node_id(),
+        private_ip: provision::assigned_ip(),
+        wireguard_public_key: provision::public_key(),
+        wireguard_endpoint: endpoint.clone(),
+        gpu: gpu_inventory().await,
+        network: network_inventory().await,
     }
 }
 #[tokio::main]
@@ -94,6 +108,9 @@ async fn main() -> Result<()> {
         .timeout(Duration::from_secs(15))
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
+    if args.provision {
+        provision::prepare(args.rotate_wireguard)?;
+    }
     let identity: Identity = if args.state.exists() {
         #[cfg(unix)]
         {
@@ -115,7 +132,7 @@ async fn main() -> Result<()> {
             .context("Create an enrollment token in the dashboard and set PC_ENROLL_TOKEN")?;
         let response = client
             .post(format!("{api}/api/agent/enroll"))
-            .json(&serde_json::json!({"token":enrollment,"report":report(&client).await}))
+            .json(&serde_json::json!({"token":enrollment,"report":report(&client, &args.wireguard_endpoint).await}))
             .send()
             .await?;
         ensure!(
@@ -149,11 +166,39 @@ async fn main() -> Result<()> {
         println!("Machine enrolled: {}", identity.id);
         identity
     };
+    if args.provision {
+        // Publish the local public key before requesting authenticated peer configuration.
+        client
+            .post(format!("{api}/api/agent/{}/heartbeat", identity.id))
+            .bearer_auth(&identity.credential)
+            .json(&report(&client, &args.wireguard_endpoint).await)
+            .send()
+            .await?
+            .error_for_status()?;
+        reconcile(&client, &identity).await?;
+    }
+    let mut last_reconcile = tokio::time::Instant::now();
+    let mut last_heartbeat = tokio::time::Instant::now() - Duration::from_secs(10);
     loop {
+        if args.provision {
+            if let Err(error) = provision::relay(&client, &identity).await {
+                eprintln!("Fleet relay: {error:#}");
+            }
+            if last_reconcile.elapsed() >= Duration::from_secs(30) {
+                if let Err(error) = reconcile(&client, &identity).await {
+                    eprintln!("Fleet configuration: {error:#}");
+                }
+                last_reconcile = tokio::time::Instant::now();
+            }
+        }
+        if last_heartbeat.elapsed() < Duration::from_secs(10) {
+            tokio::select! { _=tokio::time::sleep(Duration::from_millis(750))=>continue, _=tokio::signal::ctrl_c()=>break }
+        }
+        last_heartbeat = tokio::time::Instant::now();
         let result = client
             .post(format!("{api}/api/agent/{}/heartbeat", identity.id))
             .bearer_auth(&identity.credential)
-            .json(&report(&client).await)
+            .json(&report(&client, &args.wireguard_endpoint).await)
             .send()
             .await;
         match result {
@@ -174,7 +219,108 @@ async fn main() -> Result<()> {
         if args.once {
             break;
         }
-        tokio::select! { _=tokio::time::sleep(Duration::from_secs(10))=>{}, _=tokio::signal::ctrl_c()=>break }
+        tokio::select! { _=tokio::time::sleep(Duration::from_millis(750))=>{}, _=tokio::signal::ctrl_c()=>break }
     }
     Ok(())
+}
+
+async fn reconcile(client: &reqwest::Client, identity: &Identity) -> Result<()> {
+    let config: serde_json::Value = client
+        .get(format!("{}/api/agent/{}/config", identity.api, identity.id))
+        .bearer_auth(&identity.credential)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    if provision::apply(client, &config).await? {
+        client
+            .post(format!(
+                "{}/api/agent/{}/runtime-ready",
+                identity.api, identity.id
+            ))
+            .bearer_auth(&identity.credential)
+            .send()
+            .await?
+            .error_for_status()?;
+    }
+    Ok(())
+}
+async fn gpu_inventory() -> Vec<String> {
+    let output = tokio::time::timeout(
+        Duration::from_secs(2),
+        tokio::process::Command::new("nvidia-smi")
+            .args(["--query-gpu=name,memory.total", "--format=csv,noheader"])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    let nvidia: Vec<String> = output
+        .ok()
+        .and_then(Result::ok)
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .take(32)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    if !nvidia.is_empty() {
+        return nvidia;
+    }
+    let Ok(entries) = std::fs::read_dir("/sys/class/drm") else {
+        return vec![];
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("card") || !name[4..].chars().all(|c| c.is_ascii_digit()) {
+                return None;
+            }
+            let vendor = std::fs::read_to_string(entry.path().join("device/vendor")).ok()?;
+            let device = std::fs::read_to_string(entry.path().join("device/device")).ok()?;
+            let brand = match vendor.trim() {
+                "0x1002" => "AMD",
+                "0x8086" => "Intel",
+                "0x10de" => "NVIDIA",
+                _ => "PCI",
+            };
+            Some(format!("{brand} GPU ({})", device.trim()))
+        })
+        .take(32)
+        .collect()
+}
+async fn network_inventory() -> Vec<String> {
+    let output = tokio::time::timeout(
+        Duration::from_secs(2),
+        tokio::process::Command::new("ip")
+            .args(["-j", "address", "show", "up"])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    let Some(output) = output
+        .ok()
+        .and_then(Result::ok)
+        .filter(|o| o.status.success())
+    else {
+        return vec![];
+    };
+    let Ok(values) = serde_json::from_slice::<Vec<serde_json::Value>>(&output.stdout) else {
+        return vec![];
+    };
+    values
+        .iter()
+        .flat_map(|v| {
+            v["addr_info"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|a| a["local"].as_str().map(str::to_owned))
+        })
+        .take(64)
+        .collect()
 }

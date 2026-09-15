@@ -1,0 +1,37 @@
+# V1 implementation interfaces
+
+This document describes the actual API target for the complete V1 implementation, extending docs/api.md. Existing owner auth applies to all endpoints except agent and GitHub webhook routes. No demo data is used in the default live flow.
+
+## Coordinator-owned state and shared helpers
+`App` adds `client: reqwest::Client`, `secret_key: Arc<[u8;32]>`.
+Shared crypto module: `crate::crypto::seal(&App, context: &str, plaintext: &str) -> anyhow::Result<String>`, `open(&App, context: &str, ciphertext: &str) -> anyhow::Result<String>`.
+Modules can use root `owner(&app,&headers).await?`, `invalid(message)`, `ApiError(StatusCode,String)`, `App.db`, `App.events`, `App.client`. Convert provider errors to API errors without exposing secrets or raw response bodies. Routers return `Router<App>`; root merges and launches controllers.
+
+## Integration agent owns integrations.rs and migration 0004_integrations.sql
+`pub fn router() -> Router<App>`; `pub async fn status(app:&App)->ApiResult<Value>`; `pub async fn github_token(app:&App)->anyhow::Result<Option<String>>`.
+- GET /api/integrations: `{github:{status,login,...},cloudflare:{status,account_id,zone_id,zone_name,...}}`
+- PUT /api/integrations/github: `{token}` validates API credential, encrypts it. GET /api/github/repositories lists `{repositories:[{full_name,default_branch,private}]}`. POST /api/github/webhook verifies HMAC SHA256, deduplicates delivery, queues affected service deployments for matching branch via `crate::runtime::queue_deployment(app,service_id,Some(commit_sha),None).await`.
+- PUT /api/integrations/cloudflare: `{token,account_id,zone_id,r2_access_key_id,r2_secret_access_key,bucket}`. Validate before save; persist encryption, no credential echoes. Account/zone lookup: POST /api/integrations/cloudflare/discover `{token}` -> accounts/zones.
+- POST /api/domains `{service_id,hostname}` verifies hostname under selected zone, healthy service target, provisions tunnel/config/DNS; use `crate::runtime::service_address(app, service_id).await -> anyhow::Result<String>` for upstream address, and `crate::runtime::run_tunnel(app,tunnel_id,token).await -> anyhow::Result<()>` for connector job.
+- DELETE /api/domains/:id removes only owned resources, retaining state on provider cleanup failure.
+- `pub async fn registry_configuration(app:&App)->anyhow::Result<Option<Value>>` returns internal R2 config for root registry provisioning (not owner snapshot): account_id,bucket,access_key_id,secret_access_key.
+- Source GH PAT supported in V1 UI; webhook secret generated server-side and revealable only on explicit owner GET /api/integrations/github/webhook. Set up repo webhooks from user repo deploy action where authorized token has admin rights; support polling when inbound endpoint unavailable. GitHub App OAuth can build on manifest flow but don't present nonexistent connection.
+
+## Coordinator owns runtime.rs/crypto.rs and migration 0003_runtime.sql
+- PUT /api/runtime `{nomad_url,nomad_token?,registry_url,registry_username?,registry_password?,buildkit_address?,allow_insecure_registry?:false}`. Local harness includes a real Nomad client with nested Docker, local dev registry/BuildKit. Production requires R2-backed registry configured via Cloudflare.
+- GET /api/runtime status/configuration with secrets omitted and observed Nomad nodes. POST /api/runtime/bootstrap-registry uses encrypted Cloudflare R2 config and provisions registry as Nomad system service.
+- POST /api/services/:id/deploy `{image?:immutable-digest,commit_sha?:...}` -> deployment. Without image starts GitHub build. POST /api/services/:id/rollback `{deployment_id}` -> new deployment from previous immutable digest, no rebuild.
+- GET /api/deployments/:id -> row + ordered steps/log lines. GET /api/services/:id/logs -> `{lines:[...]}`; real alloc logs; metadata available in snapshot.
+- PUT /api/services/:id `{name,port,placement,root_directory,health_path,cpu_mhz,memory_mb}`. DELETE service/project explicit user request through UI with confirmation; safely stop owned Nomad jobs before deleting records; don't delete persistent volumes automatically.
+- GET /api/projects/:id/environment -> `{variables:[{key,updated_at}]}` no plaintext. PUT ... `{key,value}`; DELETE .../:key. Values encrypted with per-project context. Applied on next deployment. GET .../:key/reveal explicit owner action.
+- POST /api/databases `{project_id,name,machine_id?,service_ids?:[]}` -> provisions Postgres volume/job on selected healthy database-role Nomad node; never relocates. GET /api/databases/:id/connection -> explicit owner credential reveal. POST /api/databases/:id/attach `{service_id}` inject DATABASE_URL into project/service encrypted env. DELETE is explicit, preserve volume by default. Explicit migration must be a stopped/offline backup/restore workflow, never automatic.
+- Snapshot adds real deployments, databases, domains, integration/runtime status. Service fields include status,current_deployment_id,image_digest,machine_id,address; deployment includes commit_sha,image_digest,step,error,created_at. No secrets in snapshot.
+
+## Fleet agent owns crates/agent, bootstrap scripts, networking.rs, migration 0005_networking.sql
+Extend shared MachineReport with optional/defaulted `nomad_node_id`, `private_ip`, `wireguard_public_key`, `wireguard_endpoint`, `gpu`, `network` (root will handle shared core file changes centrally; send proposed fields).
+Agent durable identity, --provision installs supported Linux runtime and joins approved cluster only when explicitly invoked. One-command installer served GET /install.sh, uses release archives with checksums and creates systemd agent. Machine-specific enrollment token carries owner-selected roles/tags. Nomad node metadata must use pc_machine_id, pc_compute, pc_builder, pc_database, pc_location and tag metadata. Only coordinator controller submits jobs; agents do not impersonate owners.
+WireGuard peers use authenticated agent GET /api/agent/:id/config; all keys stay node-local except public keys. `networking::router()->Router<App>`, `networking::agent_config(app,id,credential)` contracts internally. Nomad URL configured root runtime_config available through database settings table (`settings(key TEXT PRIMARY KEY,value JSONB)`); networking uses same settings store. Use service ports on private IPs; don't require public SSH/database access.
+Bootstrap must have a disposable local Linux test harness, isolated from existing containers. Own `infra/` and `scripts/install.sh`, `scripts/fleet-*`, `.github/workflows/release.yml`, agent Cargo.toml only; no edits root Cargo.toml or main.rs. Root merges module exports/dependencies.
+
+## Frontend agent owns apps/web exclusively
+Default live sign-in/setup flow; optional explicit demo remains separate. Replace coming-soon panels with live integration forms, GitHub repo selection, runtime connection/diagnostics, install/enroll command, machine roles/tags, project service detail, deploy progress, logs, environment editing/reveal, DB provisioning/attach/connection, domain expose/remove, immutable deployment rollback. Add real route/deep links or preserve selected page across refresh where practical. Follow existing visual design. API requests match contracts above. Error states never fabricate success. If an API is still being integrated, implement frontend correctly against the contract and report exact dependencies.

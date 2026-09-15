@@ -1,0 +1,14 @@
+.git
+.env
+.env.*
+!/.env.example
+node_modules
+**/node_modules
+target
+work
+docs/plans
+**/dist
+**/.tanstack
+.pc-agent.json
+*.log
+*.pid

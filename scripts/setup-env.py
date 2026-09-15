@@ -9,6 +9,7 @@ if not path.exists():
     contents = f'''POSTGRES_PASSWORD={password}
 DATABASE_URL=postgres://personal_cloud:{password}@127.0.0.1:55438/personal_cloud
 PC_ADMIN_TOKEN={secrets.token_hex(32)}
+PC_SECRET_KEY={secrets.token_hex(32)}
 PC_BIND=127.0.0.1:4311
 PC_WEB_ORIGIN=http://127.0.0.1:4310
 '''
@@ -17,3 +18,9 @@ PC_WEB_ORIGIN=http://127.0.0.1:4310
     print('Local credentials generated in .env (mode 0600).')
 else:
     print('Using existing .env.')
+
+# Upgrade an existing local checkout without replacing its owner/database credentials.
+if 'PC_SECRET_KEY=' not in path.read_text():
+    with path.open('a') as file:
+        file.write('PC_SECRET_KEY=' + secrets.token_hex(32) + '\n')
+    print('Generated the application encryption key.')

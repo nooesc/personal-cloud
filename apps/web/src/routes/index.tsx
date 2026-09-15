@@ -51,6 +51,15 @@ import {
   type Machine,
   type Project,
 } from "../lib/data";
+import {
+  Setup,
+  RepositoryField,
+  ServiceFields,
+  serviceFields,
+  MachineSettings,
+} from "../components/live";
+import { ProjectDetail } from "../components/project";
+import { Databases, Domains } from "../components/resources";
 export const Route = createFileRoute("/")({ component: App });
 type Page =
   | "Overview"
@@ -69,9 +78,9 @@ const nav = [
   { label: "Domains", icon: Globe2 },
 ] as const;
 function App() {
-  const [mode, setMode] = useState<"demo" | "live">("demo"),
+  const [mode, setMode] = useState<"demo" | "live">("live"),
     [page, setPage] = useState<Page>("Overview"),
-    [data, setData] = useState<Snapshot>(demo),
+    [data, setData] = useState<Snapshot>(empty),
     [modal, setModal] = useState<Modal>(null),
     [selected, setSelected] = useState<Project | null>(null),
     [machineDetail, setMachineDetail] = useState<Machine | null>(null),
@@ -80,18 +89,51 @@ function App() {
     [notice, setNotice] = useState(""),
     [revealToken, setRevealToken] = useState(false),
     [busy, setBusy] = useState(false),
-    [stream, setStream] = useState("Demo data"),
+    [stream, setStream] = useState("Connecting"),
     [menu, setMenu] = useState(false),
     [enrollment, setEnrollment] = useState<{
       token: string;
       expires_at: string;
+      endpoint?: string;
     } | null>(null);
+  const [routeReady, setRouteReady] = useState(false),
+    [pendingProject, setPendingProject] = useState<string | null>(null);
   useEffect(() => {
-    if (localStorage.getItem("pc-mode") === "live") {
-      setData(empty);
-      setMode("live");
+    const params = new URLSearchParams(location.hash.slice(1));
+    const savedPage = params.get("page");
+    setPendingProject(params.get("project"));
+    setRouteReady(true);
+    if (
+      [
+        "Overview",
+        "Projects",
+        "Machines",
+        "Databases",
+        "Domains",
+        "Activity",
+        "Settings",
+      ].includes(savedPage ?? "")
+    )
+      setPage(savedPage as Page);
+    if (params.get("mode") === "demo") {
+      setMode("demo");
+      setData(structuredClone(demo));
     }
   }, []);
+  useEffect(() => {
+    if (!routeReady || pendingProject) return;
+    const params = new URLSearchParams();
+    params.set("page", page);
+    if (selected) params.set("project", selected.id);
+    if (mode === "demo") params.set("mode", "demo");
+    history.replaceState(null, "", `#${params}`);
+  }, [page, selected, mode, routeReady, pendingProject]);
+  useEffect(() => {
+    if (pendingProject && data.generated_at) {
+      setSelected(data.projects.find((p) => p.id === pendingProject) ?? null);
+      setPendingProject(null);
+    }
+  }, [pendingProject, data]);
   useEffect(() => {
     if (machineDetail) {
       const current = data.machines.find((m) => m.id === machineDetail.id);
@@ -146,6 +188,7 @@ function App() {
         if (cancelled) return;
         setError((e as Error).message);
         setStream("Disconnected");
+        if ((e as { status?: number }).status === 401) setModal("login");
         retry = setTimeout(connect, 5000);
       }
     };
@@ -167,16 +210,30 @@ function App() {
     setRevealToken(false);
     setModal(value);
   }
+  function exploreDemo() {
+    setMode("demo");
+    setData(structuredClone(demo));
+    setSelected(null);
+    setMachineDetail(null);
+    setError("");
+    setModal(null);
+  }
+  async function signOut() {
+    try {
+      await api("/session", undefined, "DELETE");
+      setData(empty);
+      setSelected(null);
+      setModal("login");
+      setNotice("Signed out");
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
   function switchMode() {
     if (mode === "demo") {
       open("login");
     } else {
-      localStorage.setItem("pc-mode", "demo");
-      setMode("demo");
-      setData(structuredClone(demo));
-      setSelected(null);
-      setMachineDetail(null);
-      setError("");
+      setPage("Settings");
     }
   }
   const machines = data.machines.filter((m) =>
@@ -236,6 +293,11 @@ function App() {
         setPage("Projects");
       }
       if (modal === "machine") {
+        const endpoint = String(form.get("wireguard_endpoint") || "");
+        if (endpoint && !/^[A-Za-z0-9.:[\]_-]+$/.test(endpoint))
+          throw new Error(
+            "Use a hostname or IP and port for the public network endpoint.",
+          );
         const result = await api<{ token: string; expires_at: string }>(
           "/enrollment-tokens",
           {
@@ -247,17 +309,13 @@ function App() {
               .filter(Boolean),
           },
         );
-        setEnrollment(result);
+        setEnrollment({
+          ...result,
+          endpoint: String(form.get("wireguard_endpoint") || ""),
+        });
       }
       if (modal === "service" && selected) {
-        const kind = String(form.get("placement"));
-        const body = {
-          name: String(form.get("name")),
-          port: Number(form.get("port")),
-          placement: kind.startsWith("machine:")
-            ? { kind: "machine", machine_id: kind.slice(8) }
-            : { kind },
-        };
+        const body = serviceFields(form);
         if (mode === "live") {
           await api(`/projects/${selected.id}/services`, body);
           await refresh();
@@ -506,6 +564,31 @@ function App() {
           )}
           {page === "Overview" && (
             <>
+              {mode === "live" &&
+                !data.services.some((s) => s.status === "healthy") && (
+                  <section className="panel welcome-panel">
+                    <div>
+                      <span className="eyebrow">
+                        LET’S GET YOUR CLOUD RUNNING
+                      </span>
+                      <h2>
+                        {data.machines.length
+                          ? "Your fleet is here. Give it something to run."
+                          : "Start with the things you already own."}
+                      </h2>
+                      <p>
+                        Connect GitHub and Cloudflare, add a Linux machine, then
+                        deploy your first application.
+                      </p>
+                    </div>
+                    <button
+                      className="button primary"
+                      onClick={() => setPage("Settings")}
+                    >
+                      Set up your cloud <ArrowRight size={15} />
+                    </button>
+                  </section>
+                )}
               <div className="stats">
                 <Stat
                   label="Machines"
@@ -571,7 +654,9 @@ function App() {
                         <LockKeyhole size={10} />
                         {mode === "demo"
                           ? "PRIVATE NETWORK · PREVIEW"
-                          : "PRIVATE NETWORK · NOT CONFIGURED"}
+                          : data.machines.some((m) => m.report.private_ip)
+                            ? "PRIVATE FLEET NETWORK"
+                            : "NETWORK · AWAITING MACHINE SETUP"}
                       </span>
                     </div>
                     <div className="machine-grid">
@@ -580,8 +665,9 @@ function App() {
                           key={m.id}
                           machine={m}
                           count={
-                            data.services.filter((s) => s.demo_machine === m.id)
-                              .length
+                            data.services.filter(
+                              (s) => (s.machine_id ?? s.demo_machine) === m.id,
+                            ).length
                           }
                           onClick={() => setMachineDetail(m)}
                         />
@@ -722,8 +808,9 @@ function App() {
                     key={m.id}
                     machine={m}
                     count={
-                      data.services.filter((s) => s.demo_machine === m.id)
-                        .length
+                      data.services.filter(
+                        (s) => (s.machine_id ?? s.demo_machine) === m.id,
+                      ).length
                     }
                     onClick={() => setMachineDetail(m)}
                   />
@@ -746,26 +833,14 @@ function App() {
               )}
             </section>
           )}
-          {(page === "Databases" || page === "Domains") && (
-            <section className="panel future-panel">
-              <Empty
-                icon={page === "Databases" ? <Database /> : <Globe2 />}
-                title={
-                  page === "Databases"
-                    ? "A steady home for your data."
-                    : "Give your service an address."
-                }
-                description={
-                  page === "Databases"
-                    ? "Managed PostgreSQL is coming in the provisioning milestone. Databases will stay pinned to their machine, with explicit moves for persistent data."
-                    : "Domain routing is coming with the Cloudflare controller. Connect a service to a domain, with Tunnel, DNS, and TLS managed for you."
-                }
-                action={
-                  <span className="planned-pill">
-                    Planned for V1 · not available yet
-                  </span>
-                }
-              />
+          {page === "Databases" && (
+            <section className="panel">
+              <Databases data={data} refresh={refresh} live={mode === "live"} />
+            </section>
+          )}
+          {page === "Domains" && (
+            <section className="panel">
+              <Domains data={data} refresh={refresh} live={mode === "live"} />
             </section>
           )}
           {page === "Activity" && (
@@ -778,87 +853,21 @@ function App() {
             </section>
           )}
           {page === "Settings" && (
-            <div className="settings-grid">
-              <Integration
-                icon={<GitFork size={25} />}
-                title="GitHub"
-                description="Repositories, pushes, and the start of every deployment."
-              />
-              <Integration
-                icon={<Cloud size={27} />}
-                title="Cloudflare"
-                description="A private network, a public address, and a home for your images."
-              />
-              <section className="panel setup-panel">
-                <Terminal size={24} />
-                <h2>Local control plane</h2>
-                <p>
-                  This first milestone includes projects, service configuration,
-                  machine enrollment, and live health reporting.
-                </p>
-                <p>Start the API and dashboard from your checkout:</p>
-                <code>pnpm dev</code>
-                <p>
-                  The owner token is generated in your local <code>.env</code>.
-                  Use it to connect this workspace.
-                </p>
-                <button
-                  className="button secondary"
-                  onClick={() => open("login")}
-                >
-                  <LockKeyhole size={15} />
-                  Connect workspace
-                </button>
-                {mode === "live" && (
-                  <button
-                    className="button secondary"
-                    onClick={async () => {
-                      try {
-                        await api("/session", undefined, "DELETE");
-                        localStorage.setItem("pc-mode", "demo");
-                        setMode("demo");
-                        setData(structuredClone(demo));
-                        setNotice("Signed out");
-                      } catch (e) {
-                        setError((e as Error).message);
-                      }
-                    }}
-                  >
-                    Sign out
-                  </button>
-                )}
-              </section>
-              <section className="panel setup-panel">
-                <Network size={24} />
-                <h2>The path to your first deploy</h2>
-                <ol className="roadmap">
-                  <li className="done">
-                    <CheckCheck size={16} />
-                    Fleet inventory & project foundation
-                  </li>
-                  <li>
-                    <span>02</span>Machine setup & private networking
-                  </li>
-                  <li>
-                    <span>03</span>GitHub builds & healthy deployments
-                  </li>
-                  <li>
-                    <span>04</span>Public domains & managed Postgres
-                  </li>
-                </ol>
-                <p>
-                  Runtime provisioning, GitHub authorization, and Cloudflare
-                  connections are not yet enabled.
-                </p>
-              </section>
-            </div>
+            <Setup
+              data={data}
+              refresh={refresh}
+              live={mode === "live"}
+              signIn={() => open("login")}
+              signOut={signOut}
+              explore={exploreDemo}
+            />
           )}
           <footer className="page-footer">
             <span>
               <Cloud size={13} /> A cloud of your own.
             </span>
             <span>
-              Personal Cloud <span className="muted">/</span> v0.1.0-alpha
+              Personal Cloud <span className="muted">/</span> v0.1.0
             </span>
           </footer>
         </main>
@@ -870,63 +879,15 @@ function App() {
         </div>
       )}
       {selected && !modal && (
-        <Dialog title={selected.name} onClose={() => setSelected(null)}>
-          <div className="project-detail-meta">
-            <GitFork size={16} />
-            {selected.repository}
-            <span>
-              <GitBranch size={13} />
-              {selected.branch}
-            </span>
-          </div>
-          <div className="detail-heading">
-            <h3>Services</h3>
-            <button
-              className="button secondary small"
-              onClick={() => open("service")}
-            >
-              <Plus size={14} />
-              Add service
-            </button>
-          </div>
-          {data.services
-            .filter((s) => s.project_id === selected.id)
-            .map((s) => (
-              <div className="service-row" key={s.id}>
-                <Box size={18} />
-                <div>
-                  <strong>{s.name}</strong>
-                  <small>
-                    Port {s.port} ·{" "}
-                    {s.placement.kind === "machine"
-                      ? (data.machines.find(
-                          (m) => m.id === s.placement.machine_id,
-                        )?.report.hostname ?? "Specific machine")
-                      : s.placement.kind}{" "}
-                    placement
-                  </small>
-                </div>
-                <span className={s.demo_status ? "health-label" : "muted"}>
-                  {s.demo_status ? "Sample · healthy" : "Not deployed"}
-                </span>
-              </div>
-            ))}
-          {!data.services.some((s) => s.project_id === selected.id) && (
-            <p className="empty-copy">
-              No services yet. Add a web application, API, or worker.
-            </p>
-          )}
-          <div className="info-callout">
-            <Code2 size={18} />
-            <span>
-              Automatic builds and deployment arrive in the next milestones.
-              Your project and service configuration{" "}
-              {mode === "live"
-                ? "is saved in the control plane"
-                : "stays in this demo session"}
-              .
-            </span>
-          </div>
+        <Dialog wide title={selected.name} onClose={() => setSelected(null)}>
+          <ProjectDetail
+            project={selected}
+            data={data}
+            refresh={refresh}
+            live={mode === "live"}
+            addService={() => open("service")}
+            onRemove={() => setSelected(null)}
+          />
         </Dialog>
       )}
       {machineDetail && (
@@ -979,13 +940,11 @@ function App() {
             </dd>
           </dl>
           {mode === "live" && (
-            <div className="info-callout">
-              <Network size={17} />
-              <span>
-                Enrollment reports machine inventory. Runtime installation and
-                private networking are part of the next milestone.
-              </span>
-            </div>
+            <MachineSettings
+              machine={machineDetail}
+              refresh={refresh}
+              onRemove={() => setMachineDetail(null)}
+            />
           )}
         </Dialog>
       )}
@@ -1038,9 +997,9 @@ function App() {
                 </div>
               </div>
               <p className="dialog-intro">
-                From a checkout on the machine you want to add, set{" "}
-                <code>PC_ENROLL_TOKEN</code> to this token, then run the agent.
-                The identity is saved locally with restricted permissions.
+                Run the installer on your Linux machine. It installs the
+                runtime, creates its private identity, and starts reporting to
+                your cloud.
               </p>
               <label className="field">
                 Enrollment token
@@ -1072,17 +1031,32 @@ function App() {
                   {error}
                 </div>
               )}
-              <pre className="command">
-                {
-                  "cargo run -p personal-cloud-agent -- --api http://127.0.0.1:4311"
+              <label className="field">
+                Install command
+                <textarea
+                  className="command"
+                  readOnly
+                  rows={5}
+                  value={`curl -fsSL '${location.origin}/install.sh' | sudo env PC_API='${location.origin}' PC_ENROLL_TOKEN='${enrollment.token}'${enrollment.endpoint ? ` PC_WIREGUARD_ENDPOINT='${enrollment.endpoint}'` : ""} sh`}
+                />
+              </label>
+              <button
+                className="button secondary small"
+                onClick={() =>
+                  copy(
+                    `curl -fsSL '${location.origin}/install.sh' | sudo env PC_API='${location.origin}' PC_ENROLL_TOKEN='${enrollment.token}'${enrollment.endpoint ? ` PC_WIREGUARD_ENDPOINT='${enrollment.endpoint}'` : ""} sh`,
+                  )
                 }
-              </pre>
+              >
+                <Copy size={15} />
+                Copy installer command
+              </button>
               <div className="info-callout">
                 <LockKeyhole size={18} />
                 <span>
-                  Loopback works on this computer. A remote machine needs an
-                  HTTPS control-plane URL. The agent currently reports
-                  inventory; automated installation is coming next.
+                  Ubuntu 22.04/24.04 or Debian 12/13 with systemd. Run on the
+                  machine you want to enroll. Your control plane URL must be
+                  reachable from that machine.
                 </span>
               </div>
               <button
@@ -1122,6 +1096,13 @@ function App() {
                       protected cookie.
                     </span>
                   </div>
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={exploreDemo}
+                  >
+                    Explore sample workspace
+                  </button>
                 </>
               )}
               {modal === "project" && (
@@ -1140,31 +1121,7 @@ function App() {
                       placeholder="My next big thing"
                     />
                   </label>
-                  <label className="field">
-                    GitHub repository
-                    <div className="input-icon">
-                      <GitFork size={17} />
-                      <input
-                        name="repository"
-                        required
-                        pattern="[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
-                        placeholder="owner/repository"
-                      />
-                    </div>
-                    <small>
-                      Repository reference only. GitHub authorization comes in a
-                      later milestone.
-                    </small>
-                  </label>
-                  <label className="field">
-                    Production branch
-                    <input
-                      name="branch"
-                      required
-                      defaultValue="main"
-                      maxLength={200}
-                    />
-                  </label>
+                  <RepositoryField live={mode === "live"} />
                   {mode === "demo" && (
                     <p className="form-note">
                       This project stays in your demo session.
@@ -1186,6 +1143,19 @@ function App() {
                       <option value="dedicated">Dedicated server</option>
                     </select>
                   </label>
+                  <label className="field">
+                    Public network endpoint{" "}
+                    <span className="muted">optional</span>
+                    <input
+                      name="wireguard_endpoint"
+                      placeholder="vps.example.com:51820"
+                    />
+                    <small>
+                      For your first server, use a reachable hostname or IP with
+                      UDP port 51820 so remote machines can join. A single
+                      machine can run without this.
+                    </small>
+                  </label>
                   <fieldset>
                     <legend>Machine roles</legend>
                     {["compute", "builder", "database"].map((role) => (
@@ -1194,7 +1164,10 @@ function App() {
                           type="checkbox"
                           name="roles"
                           value={role}
-                          defaultChecked={role === "compute"}
+                          defaultChecked={
+                            role === "compute" ||
+                            (role === "builder" && data.machines.length === 0)
+                          }
                         />
                         <span>
                           {role.charAt(0).toUpperCase() + role.slice(1)}
@@ -1214,43 +1187,10 @@ function App() {
                   <p className="dialog-intro">
                     Configure a component of {selected?.name}.
                   </p>
-                  <label className="field">
-                    Service name
-                    <input
-                      autoFocus
-                      name="name"
-                      required
-                      maxLength={80}
-                      placeholder="web"
-                    />
-                  </label>
-                  <label className="field">
-                    Listening port
-                    <input
-                      name="port"
-                      type="number"
-                      min={1}
-                      max={65535}
-                      required
-                      defaultValue={3000}
-                    />
-                  </label>
-                  <label className="field">
-                    Placement
-                    <select name="placement">
-                      <option value="automatic">Automatic</option>
-                      <option value="home">Home fleet</option>
-                      <option value="vps">Cloud VPS</option>
-                      {data.machines.map((m) => (
-                        <option key={m.id} value={`machine:${m.id}`}>
-                          {m.report.hostname}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  <ServiceFields data={data} />
                   <p className="form-note">
-                    Placement is saved as desired configuration. No workload is
-                    scheduled yet.
+                    After creating the service, deploy its production branch
+                    from the service details.
                   </p>
                 </>
               )}
@@ -1440,8 +1380,9 @@ function ProjectList({
                     services
                       .map(
                         (s) =>
-                          data.machines.find((m) => m.id === s.demo_machine)
-                            ?.report.hostname,
+                          data.machines.find(
+                            (m) => m.id === (s.machine_id ?? s.demo_machine),
+                          )?.report.hostname,
                       )
                       .filter(Boolean),
                   ),
@@ -1449,10 +1390,21 @@ function ProjectList({
               </small>
             </span>
             <span
-              className={`project-status ${services.some((s) => s.demo_status) ? "healthy" : ""}`}
+              className={`project-status ${services.length > 0 && services.every((s) => (s.status ?? s.demo_status) === "healthy") ? "healthy" : ""}`}
             >
               <span className="dot" />
-              {services.some((s) => s.demo_status) ? "Healthy" : "Not deployed"}
+              {services.length > 0 &&
+              services.every((s) => (s.status ?? s.demo_status) === "healthy")
+                ? "Healthy"
+                : services.some(
+                      (s) => s.status === "failed" || s.status === "unhealthy",
+                    )
+                  ? "Needs attention"
+                  : services.some(
+                        (s) => s.status && s.status !== "not_deployed",
+                      )
+                    ? "Deploying"
+                    : "Not deployed"}
             </span>
             <ChevronRight size={15} />
           </button>
@@ -1527,32 +1479,13 @@ function Empty({
     </div>
   );
 }
-function Integration({
-  icon,
-  title,
-  description,
-}: {
-  icon: ReactNode;
-  title: string;
-  description: string;
-}) {
-  return (
-    <section className="panel integration-panel">
-      <div className="integration-icon">{icon}</div>
-      <h2>
-        {title}
-        <span className="tag">Not connected</span>
-      </h2>
-      <p>{description}</p>
-      <span className="planned-pill">Connection setup coming next</span>
-    </section>
-  );
-}
 function Dialog({
   title,
   children,
   onClose,
+  wide = false,
 }: {
+  wide?: boolean;
   title: string;
   children: ReactNode;
   onClose: () => void;
@@ -1574,6 +1507,7 @@ function Dialog({
   return (
     <dialog
       ref={ref}
+      className={wide ? "wide-dialog" : undefined}
       aria-labelledby={titleId}
       onCancel={onClose}
       onClick={(e) => {

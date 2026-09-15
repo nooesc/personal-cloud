@@ -2,90 +2,128 @@
 
 **Your hardware. Your cloud. One place to make things run.**
 
-An open-source personal cloud built around Cloudflare, commodity VPSs, and home hardware. The destination: connect Cloudflare, connect GitHub, add machines, deploy.
+A self-hosted deployment platform for Linux machines at home and in the cloud. Connect GitHub and Cloudflare, install a machine, and deploy applications through one dashboard.
 
-> **Early alpha — fleet foundation.** This repository implements the first working milestone, not the full deployment platform. You can organize projects and services, enroll machines, and see real inventory and health updates. GitHub builds, runtime provisioning, WireGuard, public ingress, and managed PostgreSQL are still being built.
+Personal Cloud combines a Rust control plane, PostgreSQL, a TanStack Start dashboard, Nomad, Docker, WireGuard, Railpack, BuildKit, and Cloudflare R2/Tunnel/DNS. It runs your workloads on machines you own or rent.
 
-![Personal Cloud dashboard with a labeled sample fleet](docs/assets/dashboard.png)
+## Start the complete application
 
-## Run locally
-
-Prerequisites: Rust 1.94+, Node 22.12+, pnpm 10, Python 3, Docker Engine/Desktop with Compose. First boot downloads dependencies and the PostgreSQL image.
+Prerequisites: Docker Engine/Desktop with Docker Compose, Python 3, and Git. Startup downloads published multiarchitecture API/web images and PostgreSQL. It does not compile Rust or install Node packages on your machine.
 
 ```sh
 git clone https://github.com/nooesc/personal-cloud.git
 cd personal-cloud
-pnpm install
-pnpm dev
+bash scripts/start.sh
 ```
 
-Open **http://127.0.0.1:4310**. The dashboard starts with a clearly labeled, interactive sample fleet. Select **Connect your cloud** and enter `PC_ADMIN_TOKEN` from the generated `.env` to open your real workspace.
+Open **http://127.0.0.1:4310**. Sign in with `PC_ADMIN_TOKEN` from the generated **`.env.production`** file. The default workspace is live and empty; sample data is available only through the explicit **Explore sample workspace** action.
 
-`pnpm dev` generates random local credentials once, starts an isolated PostgreSQL container on loopback port 55438, applies migrations, builds the Rust workspace, and starts the API (4311) and dashboard (4310). Ports are reserved for this checkout. Closing it stops both servers; database records remain in the Compose volume. `docker compose stop` stops the database without deleting data.
+The production stack includes the built web application, API, and a persistent PostgreSQL volume. Only the web listener is published, on loopback by default. API requests, installer downloads, and WebSocket updates pass through the same web origin. PostgreSQL and the API have no published host ports.
 
-Use `127.0.0.1` consistently: browser origin checks intentionally reject `localhost` when the configured origin is `127.0.0.1`. If running the API separately, set `PC_WEB_ORIGIN` to the exact frontend origin.
+`start.sh` creates the owner token, database password, and encryption key once with mode `0600`, then reuses them on every start. **Back up `.env.production` with the database. Losing `PC_SECRET_KEY` makes stored integration credentials, environment values, and database credentials unreadable.** Do not replace it during an upgrade.
 
-### Enroll this machine
+### Use a public HTTPS address
 
-1. Connect the live workspace, select **Add machine**, choose its location and roles, and create an enrollment token.
-2. In Bash, read the copied token without adding it to shell history:
+Remote machines need a reachable HTTPS control-plane URL. Put an HTTPS reverse proxy in front of the loopback web port; forward normal HTTP requests and WebSocket upgrades. On the first run:
 
-   ```bash
-   read -r -s -p 'Enrollment token: ' PC_ENROLL_TOKEN
-   export PC_ENROLL_TOKEN
-   printf '\n'
-   cargo run -p personal-cloud-agent -- --api http://127.0.0.1:4311
-   ```
+```sh
+PC_PUBLIC_URL=https://cloud.example.com bash scripts/start.sh
+```
 
-The token expires after 15 minutes and can be claimed once. The agent saves a separate identity in `.pc-agent.json` with mode 0600. On later runs, the saved identity is used; a token is no longer needed. `--state PATH` changes the identity file, and `--once` sends one heartbeat and exits.
+If you already initialized the stack, edit `PC_PUBLIC_URL` in `.env.production`, then run `bash scripts/start.sh` again. Set the exact origin without a path or trailing slash. This origin controls authenticated browser requests, secure cookies, and GitHub webhook registration. Configure the reverse proxy to preserve `Origin` and support WebSockets for `/api/events` and `/api/services/*/events`.
 
-The agent reports hostname, OS, architecture, CPU, RAM, root-disk capacity, Docker reachability, and Nomad health every ten seconds. Missing heartbeats become **offline** after 45 seconds; unavailable runtimes become **degraded**. Enrollment does not install runtimes, provision workloads, or change the host network. Remote agents require an HTTPS API URL. GPU inventory, network inventory, automatic install, and the supported Linux VM path for macOS are later work.
+For a proxy on another host or container network, deliberately choose the host bind in `.env.production`; the default `PC_HOST_BIND=127.0.0.1` keeps it local. Avoid publishing the API or database directly.
 
-## What works today
+### First deployment
 
-- Responsive TanStack Start dashboard: fleet map, capacity, projects, machine details, activity, search, and empty/error states.
-- Demo mode isolated from live API writes; sample health is explicitly labeled.
-- Owner authentication with hashed, expiring, revocable browser sessions and origin checking.
-- PostgreSQL-backed projects and service configuration, including desired placement.
-- Single-use, expiring enrollment tokens; distinct machine credentials stored only as hashes server-side.
-- Rust reporting agent and reconnecting WebSocket fleet snapshots.
-- Initial stateless Nomad job compiler with architecture/location constraints and immutable-image validation. **It does not submit jobs or constitute a working deployment controller.**
+1. **Settings → GitHub:** connect a token with repository contents access. Repository administration permission enables automatic webhook registration. If inbound webhooks are unavailable, the control plane polls connected production branches.
+2. **Settings → Cloudflare:** connect an API token, select the account and active domain zone, and provide an R2 bucket with S3 API credentials. The API validates credentials before saving them encrypted.
+3. **Add machine:** choose its location, roles, and tags. The first machine defaults to compute and builder roles. Copy the one-use installer command to a supported Linux host.
+4. **Private network:** the first installed machine becomes the fleet server. Give it a public WireGuard endpoint with reachable UDP port 51820 when joining machines across networks. Home nodes connect outbound to that server. A single machine can run without a public endpoint.
+5. **Settings → Set up image storage:** provision the R2-backed registry. The first machine registers the cluster connection automatically; manual runtime settings are available under Advanced.
+6. **New project:** choose a GitHub repository and production branch. Add a service, set its listening port and health path, then select **Deploy latest**.
+7. Follow build and health-check progress in the service details. Add a public hostname through **Domains → Expose service** once the service is healthy.
 
-## Next milestones
+The installer supports **Ubuntu 22.04/24.04 and Debian 12/13 with systemd**, on amd64 or arm64. It installs Docker, Nomad, and WireGuard, verifies release archive checksums, and runs the agent as a system service. Builder machines also install BuildKit. macOS machines require a Linux VM; see [fleet setup](infra/README.md).
 
-1. **Private fleet:** Linux bootstrap, signed releases, Docker/Nomad, WireGuard.
-2. **First deploy:** GitHub App and verified webhooks → Railpack → BuildKit → R2-backed OCI registry → health-gated Nomad deployment.
-3. **Expose and persist:** Cloudflare Tunnel/DNS/TLS, encrypted application secrets, machine-pinned PostgreSQL.
-4. **V1 release:** live logs/metrics, health-gated rollback, failure drills, and the clean-machine ten-minute onboarding test.
+**Release prerequisite:** startup pulls `ghcr.io/nooesc/personal-cloud-api` and `ghcr.io/nooesc/personal-cloud-web`; the installer downloads the published agent release, and application builds use the published builder image. A reviewed `v*` tag triggers the [production image workflow](.github/workflows/images.yml) and [agent/builder release workflow](.github/workflows/release.yml). These artifacts must finish publishing and be publicly pullable before distributing installation instructions. A source checkout alone does not publish them.
 
-Databases never automatically move between machines. The current compiler rejects stateful workloads until volume provisioning exists. Integration pages describe what is planned rather than claiming a connection.
+The default image tag is `latest`. Set `PC_VERSION=vX.Y.Z` in `.env.production` to pin both control-plane images to a release. To build an unpublished checkout or verify local changes instead:
 
-See the [original V1 spec](docs/product/v1-spec.md) and [API contract](docs/api.md). The public roadmap is summarized above; local execution plans stay untracked.
+```sh
+PC_BUILD_FROM_SOURCE=1 bash scripts/start.sh
+```
+
+The explicit source-build path downloads Rust/Node build dependencies inside Docker. A failed image pull reports the failure without silently starting a source build.
+
+## Capabilities
+
+- **Fleet:** durable machine identities, CPU/RAM/disk/GPU/network inventory, roles, tags, health, and private network membership.
+- **Applications:** GitHub repository selection, production-branch builds, automatic or explicit placement, resource limits, health checks, immutable image deployments, and rollback without rebuilding.
+- **Builds:** Railpack detection/build planning, BuildKit builds, OCI image upload, scheduler placement, and ordered build progress with visible failure details.
+- **Secrets:** encrypted project variables with explicit reveal; changes take effect on the next deployment.
+- **PostgreSQL:** provision a persistent database on a healthy database-role machine, attach `DATABASE_URL` to a service, reveal connection credentials explicitly, and monitor health. Database placement stays pinned. Removing a database preserves its volume.
+- **Domains:** provision Cloudflare Tunnel/DNS routing for healthy services and remove only the resources owned by Personal Cloud.
+- **Observability:** live fleet snapshots, deployment progress, activity, service logs, and allocation metrics. Connection failures remain visible; live failures never switch to sample data.
+- **Access:** single-owner authentication, hashed/revocable browser sessions, distinct one-use enrollment tokens and agent credentials, and encrypted provider credentials.
+
+See the [original V1 specification](docs/product/v1-spec.md), [API overview](docs/api.md), and [runtime interfaces](docs/runtime-contract.md).
+
+## Operate and upgrade
+
+```sh
+# Pull published images and start; preserves credentials and the database volume.
+bash scripts/start.sh
+
+# Status and logs.
+docker compose --env-file .env.production -f compose.production.yml ps
+docker compose --env-file .env.production -f compose.production.yml logs --tail=100 web api
+
+# Stop without deleting persistent data.
+docker compose --env-file .env.production -f compose.production.yml stop
+
+# Control-plane database backup (protect this file as secret data).
+mkdir -p work/backups
+umask 077
+docker compose --env-file .env.production -f compose.production.yml exec -T postgres \
+  pg_dump -U personal_cloud -d personal_cloud -Fc > work/backups/control-plane.dump
+```
+
+Back up application PostgreSQL volumes separately. A control-plane backup contains configuration and encrypted credentials, not application database contents. Do not run `down --volumes` unless intentionally destroying the control database. Database machines are never automatically relocated; plan explicit offline backup/restore for a move.
+
+`PC_ENV_FILE`, `PC_COMPOSE_PROJECT`, and `PC_PORT` can isolate an additional stack. `PC_VERSION` selects the published API/web image tag; `PC_BUILD_FROM_SOURCE=1` explicitly builds this checkout. Use a different Compose project to keep its volume separate. Existing credentials are never regenerated automatically.
+
+## Current limits and validation boundary
+
+This is a single-owner, single-control-plane implementation. It does not include billing, teams/SSO, automatic scaling, database HA, automatic database migration, automated backups, or a credential-rotation UI. Service metrics expose the runtime's reported allocation data; the dashboard is not a monitoring warehouse.
+
+The production package has been checked in an isolated Compose stack: built SSR and static assets, same-origin HTTP and WebSocket routing, owner sessions, origin rejection, persisted service settings, encrypted secrets, and restart recovery all passed. The local checks and disposable Linux harness also exercise API persistence, builds, scheduling, and failure handling. They do not prove a user's real GitHub permissions, Cloudflare account, R2 bucket, public DNS/TLS, firewall, or multi-machine connectivity. A production deployment is ready only after its own provider connections, machine enrollment, immutable deployment, public route, and application database are observed working. The ten-minute clean-machine onboarding target is a release acceptance criterion, not an asserted timing guarantee.
 
 ## Development
 
+Prerequisites: Rust 1.94+, Node 22.12+, pnpm 10, Python 3, and Docker with Compose.
+
 ```sh
-pnpm check                   # Rust formatting/tests, web build, TypeScript
+pnpm install
+pnpm dev                    # isolated development Postgres, API, web
+pnpm check                  # Rust formatting/tests, web build/typecheck
 cargo clippy --workspace -- -D warnings
-pnpm smoke                   # API + Postgres behavior checks; run pnpm dev first
-pnpm dev:web                 # UI-only interactive demo, no Postgres required
+pnpm smoke                  # API + Postgres checks; dev stack must be running
 ```
 
-Smoke tests create and clean up only their own test records. They cover authentication, origin checks, persisted project/service writes, duplicate handling, simultaneous enrollment claims, token expiry, isolated credentials, validation, and online/offline/degraded transitions.
+The development stack uses `.env`, API port 4311, web port 4310, and PostgreSQL port 55438, all on loopback. Production uses its separate `.env.production` and private Compose network. Stop one web stack or choose another `PC_PORT` before starting both.
 
+```text
+apps/web/              Dashboard and production web server
+crates/control-plane/  API, integration/runtime controllers, encrypted persistence
+crates/agent/          Machine identity, installation, inventory, private network
+crates/core/           Shared models and placement contracts
+migrations/           Versioned PostgreSQL schema
+build/                Application builder image and build scripts
+infra/                Disposable fleet harness and Linux host setup
+scripts/              Development, production startup, installation, verification
 ```
-apps/web/             TanStack Start + React + TypeScript
-crates/core/          Shared contracts and initial Nomad placement compiler
-crates/control-plane Axum API, SQLx persistence, sessions, WebSockets
-crates/agent/         Inventory and heartbeats
-migrations/          Versioned PostgreSQL schema
-scripts/             Local bootstrap and integration verification
-```
-
-### Deployment boundary
-
-This milestone is a local development system, not a production hosting release. It defaults to loopback and uses same-origin Vite proxying. Production frontend serving, TLS termination, credential rotation UI, rate limits, release packaging, backups, and integration provisioning are not implemented. Never expose the development servers directly to the public internet. All six V1 objects have schema space; deployment/database/domain APIs are intentionally unavailable until their controllers exist.
 
 ## License
 
-Our code is licensed under [Apache-2.0](LICENSE). Dependencies and external tools retain their own licenses. Nomad is a separately distributed dependency; this project's license does not relicense Nomad.
+Personal Cloud is licensed under [Apache-2.0](LICENSE). Dependencies retain their licenses. Nomad is distributed separately; this project's license does not relicense Nomad.

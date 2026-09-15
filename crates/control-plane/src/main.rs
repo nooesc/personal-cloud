@@ -1,3 +1,7 @@
+mod crypto;
+mod integrations;
+mod networking;
+mod runtime;
 use axum::{
     Json, Router,
     extract::{
@@ -25,6 +29,8 @@ struct App {
     admin_hash: Arc<String>,
     origin: Arc<String>,
     events: broadcast::Sender<()>,
+    client: reqwest::Client,
+    secret_key: Arc<[u8; 32]>,
 }
 struct ApiError(StatusCode, String);
 type ApiResult<T> = Result<T, ApiError>;
@@ -133,8 +139,29 @@ async fn main() -> anyhow::Result<()> {
         admin_hash: Arc::new(hash(&admin)),
         origin: Arc::new(env::var("PC_WEB_ORIGIN").unwrap_or("http://127.0.0.1:4310".into())),
         events: broadcast::channel(64).0,
+        client: reqwest::Client::builder()
+            .user_agent("personal-cloud/0.1")
+            .timeout(Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?,
+        secret_key: Arc::new(crypto::load_key()?),
     };
+    runtime::spawn_controller(app.clone());
+    runtime::spawn_database_controller(app.clone());
+    integrations::spawn_controller(app.clone());
     let router = Router::new()
+        .merge(runtime::router())
+        .merge(integrations::router())
+        .merge(networking::router())
+        .route(
+            "/install.sh",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/x-shellscript")],
+                    include_str!("../../../scripts/install.sh"),
+                )
+            }),
+        )
         .route(
             "/api/health",
             get(|| async { Json(json!({"status":"ok","version":env!("CARGO_PKG_VERSION")})) }),
@@ -147,17 +174,29 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/agent/enroll", post(enroll))
         .route("/api/agent/{id}/heartbeat", post(heartbeat))
         .route("/api/events", get(events))
-        .layer(DefaultBodyLimit::max(32 * 1024))
+        .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(app);
     let address = env::var("PC_BIND").unwrap_or("127.0.0.1:4311".into());
     let listener = tokio::net::TcpListener::bind(&address).await?;
     tracing::info!(%address,"Personal Cloud control plane ready");
-    axum::serve(listener, router)
+    use std::future::IntoFuture;
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server = axum::serve(listener, router)
         .with_graceful_shutdown(async {
-            tokio::signal::ctrl_c().await.ok();
+            let _ = stopped.await;
         })
-        .await?;
+        .into_future();
+    tokio::pin!(server);
+    tokio::select! {
+      result=&mut server=>result?,
+      _=tokio::signal::ctrl_c()=>{
+        let _=stop.send(());
+        // Long-lived WebSockets must not prevent upgrades or shutdown indefinitely.
+        if let Ok(result)=tokio::time::timeout(Duration::from_secs(5),&mut server).await{result?;}
+      }
+    }
+
     Ok(())
 }
 #[derive(Deserialize)]
@@ -228,8 +267,23 @@ async fn snapshot(app: &App) -> ApiResult<Value> {
     )
     .fetch_all(&app.db)
     .await?;
+    let deployments: Vec<Value> = sqlx::query_scalar(
+        "SELECT to_jsonb(d) FROM (SELECT * FROM deployments ORDER BY created_at DESC LIMIT 200) d",
+    )
+    .fetch_all(&app.db)
+    .await?;
+    let databases: Vec<Value> = sqlx::query_scalar(
+        "SELECT to_jsonb(d)-'connection_encrypted' FROM databases d ORDER BY created_at",
+    )
+    .fetch_all(&app.db)
+    .await?;
+    let domains: Vec<Value> =
+        sqlx::query_scalar("SELECT to_jsonb(d) FROM domains d ORDER BY created_at")
+            .fetch_all(&app.db)
+            .await?;
+    let integrations = integrations::status(app).await?;
     Ok(
-        json!({"machines":machines,"projects":projects,"services":services,"deployments":[],"databases":[],"domains":[],"activity":activity,"integrations":{"github":"not_connected","cloudflare":"not_connected"},"generated_at":Utc::now()}),
+        json!({"machines":machines,"projects":projects,"services":services,"deployments":deployments,"databases":databases,"domains":domains,"activity":activity,"integrations":integrations,"generated_at":Utc::now()}),
     )
 }
 async fn get_snapshot(State(app): State<App>, headers: HeaderMap) -> ApiResult<Json<Value>> {
@@ -280,6 +334,18 @@ struct NewService {
     name: String,
     port: u16,
     placement: Placement,
+    #[serde(default = "runtime::root_dir")]
+    root_directory: String,
+    #[serde(default = "runtime::health_path")]
+    health_path: String,
+    #[serde(default = "runtime::cpu")]
+    cpu_mhz: i32,
+    #[serde(default = "runtime::memory")]
+    memory_mb: i32,
+    #[serde(default = "runtime::architecture")]
+    architecture: String,
+    #[serde(default = "runtime::yes")]
+    auto_deploy: bool,
 }
 async fn create_service(
     State(app): State<App>,
@@ -289,6 +355,13 @@ async fn create_service(
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     owner(&app, &headers).await?;
     let name = text_field(&input.name, 80)?;
+    runtime::validate_service(
+        &input.root_directory,
+        &input.health_path,
+        input.cpu_mhz,
+        input.memory_mb,
+        &input.architecture,
+    )?;
     if input.port == 0 {
         return Err(invalid("Port must be between 1 and 65535"));
     }
@@ -311,12 +384,13 @@ async fn create_service(
     }
     let id = Uuid::new_v4();
     let mut tx = app.db.begin().await?;
-    sqlx::query("INSERT INTO services(id,project_id,name,port,placement) VALUES($1,$2,$3,$4,$5)")
+    sqlx::query("INSERT INTO services(id,project_id,name,port,placement,root_directory,health_path,cpu_mhz,memory_mb,architecture,auto_deploy) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
         .bind(id)
         .bind(project_id)
         .bind(&name)
         .bind(i32::from(input.port))
         .bind(json!(input.placement))
+        .bind(input.root_directory).bind(input.health_path).bind(input.cpu_mhz).bind(input.memory_mb).bind(input.architecture).bind(input.auto_deploy)
         .execute(&mut *tx)
         .await?;
     sqlx::query("INSERT INTO events(kind,message) VALUES('service.created',$1)")

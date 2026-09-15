@@ -10,6 +10,10 @@ export type Report = {
   disk_used: number;
   docker: boolean;
   nomad: boolean;
+  nomad_node_id?: string;
+  private_ip?: string;
+  gpu?: unknown;
+  network?: unknown;
 };
 export type Machine = {
   id: string;
@@ -33,6 +37,15 @@ export type Service = {
   name: string;
   port: number;
   placement: { kind: string; machine_id?: string };
+  status?: string;
+  current_deployment_id?: string;
+  image_digest?: string;
+  machine_id?: string;
+  address?: string;
+  root_directory?: string;
+  health_path?: string;
+  cpu_mhz?: number;
+  memory_mb?: number;
   demo_machine?: string;
   demo_status?: string;
 };
@@ -42,15 +55,51 @@ export type Activity = {
   message: string;
   created_at: string;
 };
+export type Deployment = {
+  id: string;
+  service_id: string;
+  status: string;
+  step?: string;
+  commit_sha?: string;
+  image_digest?: string;
+  error?: string;
+  created_at: string;
+  steps?: { name?: string; step?: string; status?: string; message?: string }[];
+  logs?: unknown[];
+};
+export type DatabaseInstance = {
+  id: string;
+  project_id: string;
+  name: string;
+  machine_id?: string;
+  status?: string;
+  error?: string;
+};
+export type Domain = {
+  id: string;
+  service_id: string;
+  hostname: string;
+  status?: string;
+  error?: string;
+};
+export type Provider = {
+  status: string;
+  login?: string;
+  account_id?: string;
+  zone_id?: string;
+  zone_name?: string;
+  bucket?: string;
+};
 export type Snapshot = {
   machines: Machine[];
   projects: Project[];
   services: Service[];
-  deployments: unknown[];
-  databases: unknown[];
-  domains: unknown[];
+  deployments: Deployment[];
+  databases: DatabaseInstance[];
+  domains: Domain[];
   activity: Activity[];
-  integrations: { github: string; cloudflare: string };
+  integrations: { github: string | Provider; cloudflare: string | Provider };
+  runtime?: Record<string, unknown>;
   generated_at: string;
 };
 const GB = 1024 ** 3;
@@ -205,6 +254,7 @@ export async function api<T>(
   method?: string,
 ): Promise<T> {
   const response = await fetch(`/api${path}`, {
+    cache: "no-store",
     method: method ?? (body ? "POST" : "GET"),
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
@@ -213,7 +263,21 @@ export async function api<T>(
     const data = await response
       .json()
       .catch(() => ({ error: "Control plane unavailable" }));
-    throw new Error(data.error ?? `Request failed (${response.status})`);
+    throw new ApiError(
+      data.error ?? `Request failed (${response.status})`,
+      response.status,
+    );
   }
-  return response.json();
+  if (response.status === 204) return undefined as T;
+  const text = await response.text();
+  return text ? JSON.parse(text) : (undefined as T);
+}
+
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+  ) {
+    super(message);
+  }
 }

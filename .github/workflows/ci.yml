@@ -1,4 +1,4 @@
-name: Verify foundation
+name: Verify Personal Cloud
 on:
   push:
   pull_request:
@@ -36,3 +36,4 @@ jobs:
             sleep 1
           done
           pnpm smoke
+          python3 scripts/test-postgres.py

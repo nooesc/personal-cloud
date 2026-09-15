@@ -15,6 +15,18 @@ pub struct MachineReport {
     pub disk_used: u64,
     pub docker: bool,
     pub nomad: bool,
+    #[serde(default)]
+    pub nomad_node_id: Option<String>,
+    #[serde(default)]
+    pub private_ip: Option<String>,
+    #[serde(default)]
+    pub wireguard_public_key: Option<String>,
+    #[serde(default)]
+    pub wireguard_endpoint: Option<String>,
+    #[serde(default)]
+    pub gpu: Vec<String>,
+    #[serde(default)]
+    pub network: Vec<String>,
 }
 impl MachineReport {
     pub fn validate(&self) -> Result<()> {

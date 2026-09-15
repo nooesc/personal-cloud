@@ -1,0 +1,67 @@
+name: personal-cloud-production
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: personal_cloud
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run scripts/start.sh to create production credentials}
+      POSTGRES_DB: personal_cloud
+    volumes:
+      - control-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U personal_cloud -d personal_cloud"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    networks: [control]
+  api:
+    image: ghcr.io/nooesc/personal-cloud-api:${PC_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    restart: unless-stopped
+    init: true
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      DATABASE_URL: postgres://personal_cloud:${POSTGRES_PASSWORD}@postgres:5432/personal_cloud
+      PC_ADMIN_TOKEN: ${PC_ADMIN_TOKEN:?Missing durable owner token}
+      PC_SECRET_KEY: ${PC_SECRET_KEY:?Missing durable encryption key}
+      PC_BIND: 0.0.0.0:4311
+      PC_WEB_ORIGIN: ${PC_PUBLIC_URL:-http://127.0.0.1:4310}
+      PC_PUBLIC_URL: ${PC_PUBLIC_URL:-http://127.0.0.1:4310}
+      RUST_LOG: ${RUST_LOG:-personal_cloud_api=info}
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    networks: [control, outbound]
+  web:
+    image: ghcr.io/nooesc/personal-cloud-web:${PC_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: web
+    restart: unless-stopped
+    init: true
+    depends_on:
+      api: {condition: service_healthy}
+    environment:
+      PC_API_URL: http://api:4311
+      PC_WEB_ORIGIN: ${PC_PUBLIC_URL:-http://127.0.0.1:4310}
+    ports:
+      - "${PC_HOST_BIND:-127.0.0.1}:${PC_PORT:-4310}:3000"
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    networks: [control, edge]
+volumes:
+  control-data:
+networks:
+  control:
+    internal: true
+  outbound:
+  edge:

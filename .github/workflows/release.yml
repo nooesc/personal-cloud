@@ -1,0 +1,79 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  agent:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked --release --target ${{ matrix.target }} -p personal-cloud-agent
+      - run: tar -C target/${{ matrix.target }}/release -czf personal-cloud-agent-linux-${{ matrix.arch }}.tar.gz personal-cloud-agent
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-${{ matrix.arch }}
+          path: personal-cloud-agent-linux-*.tar.gz
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: agent
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: agent-*
+          merge-multiple: true
+      - run: sha256sum personal-cloud-agent-linux-*.tar.gz > SHA256SUMS
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: personal-cloud-agent-linux-*.tar.gz
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            personal-cloud-agent-linux-*.tar.gz
+            SHA256SUMS
+            scripts/install.sh
+  builder:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: build
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/${{ github.repository }}-builder:${{ github.ref_name }},ghcr.io/${{ github.repository }}-builder:latest
+          provenance: true
+          sbom: true
