@@ -9,6 +9,7 @@ These results describe executed checks, not inferred provider success. The origi
 - Desktop and 390px mobile project views were rendered and inspected; mobile content stayed within the viewport.
 - Browser verification covered real deployment progress/history, logs, metrics, and saving/revealing an encrypted environment value.
 - The production Compose package passed 25 checks covering built SSR/static assets, same-origin API and WebSocket proxying, authentication, origin rejection, persisted service settings, encrypted secrets, session revocation, and persistence across API/web restarts.
+- A second fresh installation pulled the published API/web images anonymously using the default startup command and passed all 25 production checks. Both released images provide Linux amd64 and arm64 manifests; their `latest` tags matched `v0.1.0` at verification time.
 - GitHub CI passed for the V1 implementation. The published agent release contains amd64/arm64 archives and SHA256 checksums.
 
 ## Runtime and recovery
