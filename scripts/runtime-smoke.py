@@ -45,7 +45,12 @@ for stub in nodes:
  # Node inventory is real; utilization comes from agent after installer acceptance.
  encoded=json.dumps(report).replace("'","''")
  sql(f"INSERT INTO machines(id,credential_hash,location,roles,tags,report) VALUES('{mid}','acceptance-{mid}','home',ARRAY['compute','builder','database'],ARRAY['acceptance'],'{encoded}') ON CONFLICT(id) DO UPDATE SET report=excluded.report,last_seen=now()")
-api('/runtime',{'nomad_url':manifest['NOMAD_ADDR'],'registry_url':'http://127.0.0.1:5000','buildkit_address':'tcp://127.0.0.1:1234','builder_image':'personal-cloud-builder:dev','allow_insecure_registry':True,'require_cloudflare':False},'PUT')
+# Nomad garbage-collects local-only images; publish the harness builder so later runs can pull it.
+archive=subprocess.Popen(['tar','-C',str(ROOT/'build'),'-cf','-','.'],stdout=subprocess.PIPE)
+subprocess.run(['docker','exec','-i',args.harness,'docker','build','-t','127.0.0.1:5000/pc-builder:acceptance','-'],stdin=archive.stdout,check=True,stdout=subprocess.DEVNULL)
+archive.stdout.close();assert archive.wait()==0
+subprocess.run(['docker','exec',args.harness,'docker','push','127.0.0.1:5000/pc-builder:acceptance'],check=True,stdout=subprocess.DEVNULL)
+api('/runtime',{'nomad_url':manifest['NOMAD_ADDR'],'registry_url':'http://127.0.0.1:5000','buildkit_address':'tcp://127.0.0.1:1234','builder_image':'127.0.0.1:5000/pc-builder:acceptance','allow_insecure_registry':True,'require_cloudflare':False},'PUT')
 pid=api('/projects',{'name':'Runtime acceptance '+uuid.uuid4().hex[:6],'repository':'railwayapp/railpack','branch':'main'})['id']
 sid=api('/projects/'+pid+'/services',{'name':'FastAPI','port':8000,'placement':{'kind':'automatic'},'root_directory':'examples/python-fastapi','health_path':'/','auto_deploy':False})['id']
 state={'project':pid,'service':sid,'databases':[]};state_path.write_text(json.dumps(state,indent=2))

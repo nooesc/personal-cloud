@@ -523,6 +523,22 @@ async fn build_image(
                     return Ok(image.into());
                 }
                 Some("failed" | "lost") => {
+                    if let Some(events) = alloc["TaskStates"]["build"]["Events"].as_array() {
+                        for event in events.iter().rev().take(5) {
+                            if let Some(message) = event["DisplayMessage"].as_str() {
+                                step(
+                                    app,
+                                    id,
+                                    "build_error",
+                                    &super::observability::redact(
+                                        message,
+                                        env.as_object().context("Invalid build environment")?,
+                                    ),
+                                )
+                                .await?;
+                            }
+                        }
+                    }
                     anyhow::bail!("Application build failed; inspect deployment logs")
                 }
                 _ => {}
