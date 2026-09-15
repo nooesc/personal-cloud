@@ -16,7 +16,7 @@ cat > /etc/nomad.d/test.json <<JSON
  "advertise":{"http":"127.0.0.1:4646","rpc":"127.0.0.1:4647","serf":"127.0.0.1:4648"},
  "server":{"enabled":true,"bootstrap_expect":1},
  "client":{"enabled":true,"cpu_total_compute":24000,"servers":["127.0.0.1:4647"],"host_network":{"pc_private":{"cidr":"127.0.0.0/8"}},"host_volume":{"pc-data":{"path":"/var/lib/personal-cloud/volumes","read_only":false}},"meta":{"pc_machine_id":"${PC_TEST_MACHINE_ID:-00000000-0000-4000-8000-000000000001}","pc_compute":"true","pc_builder":"true","pc_database":"true","pc_location":"home","pc_tag_test":"true"}},
- "plugin":{"docker":{"config":{"allow_privileged":true,"volumes":{"enabled":true}}}},
+ "plugin":{"docker":{"config":{"allow_privileged":true,"volumes":{"enabled":true},"gc":{"dangling_containers":{"enabled":false}}}}},
  "telemetry":{"publish_allocation_metrics":true,"publish_node_metrics":true,"collection_interval":"1s"},"consul":{"auto_advertise":false,"server_auto_join":false,"client_auto_join":false}
 }
 JSON

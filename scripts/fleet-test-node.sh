@@ -20,7 +20,7 @@ cat > /etc/nomad.d/second.json <<JSON
  "ports":{"http":4652,"rpc":4653,"serf":4654},
  "advertise":{"http":"127.0.0.2:4652","rpc":"127.0.0.2:4653","serf":"127.0.0.2:4654"},
  "client":{"enabled":true,"cpu_total_compute":24000,"servers":["127.0.0.1:4647"],"cgroup_parent":"nomad-second.slice","min_dynamic_port":32001,"max_dynamic_port":40000,"host_network":{"pc_private":{"cidr":"127.0.0.2/32"}},"host_volume":{"pc-data":{"path":"/opt/personal-cloud/second-data","read_only":false}},"meta":{"pc_machine_id":"$PC_TEST_MACHINE_ID2","pc_compute":"true","pc_builder":"true","pc_database":"true","pc_location":"home","pc_tag_test":"true"}},
- "plugin":{"docker":{"config":{"allow_privileged":false,"volumes":{"enabled":true}}}},
+ "plugin":{"docker":{"config":{"allow_privileged":false,"volumes":{"enabled":true},"gc":{"dangling_containers":{"enabled":false}}}}},
  "telemetry":{"publish_allocation_metrics":true,"publish_node_metrics":true,"collection_interval":"1s"},"consul":{"auto_advertise":false,"server_auto_join":false,"client_auto_join":false}
 }
 JSON
