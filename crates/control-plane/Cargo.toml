@@ -24,3 +24,7 @@ aes-gcm = "0.10"
 base64 = "0.22"
 hmac = "0.12"
 rand = "0.8"
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto", "use_pem"] }
+
+[dev-dependencies]
+rsa = { version = "0.9", features = ["pem"] }

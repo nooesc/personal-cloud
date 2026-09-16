@@ -227,7 +227,7 @@ pub(super) async fn process(app: &App, id: Uuid) -> anyhow::Result<()> {
         let repo = project["repository"]
             .as_str()
             .context("Missing repository")?;
-        let source_token = crate::integrations::github_token(app).await?;
+        let source_token = crate::integrations::github_token(app, repo).await?;
         let _ = crate::integrations::ensure_repository_webhook(app, repo).await;
         if cfg.require_cloudflare {
             provision_registry(app).await?;

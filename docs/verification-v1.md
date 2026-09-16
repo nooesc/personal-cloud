@@ -65,3 +65,11 @@ python3 scripts/recovery-smoke.py <fleet-test-name>
 ```
 
 Runtime tests intentionally leave labelled acceptance records for inspection. Database removal preserves volumes. Follow the harness's ownership-checked cleanup instructions; do not delete unrelated machines, containers, or volumes.
+
+## GitHub identity and repository access — v0.2.0
+
+- Added owner-bound GitHub sign-in, manifest-based App registration, personal/organization installation discovery, repository selection, per-repository installation tokens, App push delivery, token refresh and owner recovery.
+- Workspace checks passed (19 API unit tests, 2 core tests, web build/typecheck), Clippy passed with warnings denied, and the API smoke suite passed against an isolated PostgreSQL/API instance.
+- Ten PostgreSQL regression tests passed, including the GitHub protocol suite. It covers wrong-account rejection, expired/cancelled/replayed and cross-browser flows, encrypted credentials, verified installation IDs, scoped tokens, push deduplication, signed uninstall, unlink/session races and recovery.
+- Registration, connected personal/org account rows, long names, sign-in and keyboard focus were rendered at desktop and 390px mobile widths. Connected UI states used explicitly synthetic records in an isolated database; no provider access was inferred from these fixtures.
+- Real GitHub App registration, authorization, organization approval and private-repository deployment remain provider acceptance steps until an owner completes GitHub's permission flow. The existing live Cloudflare/R2 deployment is independent of that activation.

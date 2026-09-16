@@ -205,7 +205,7 @@ fn cloudflare<'a>(app: &'a App, token: &'a str) -> Provider<'a> {
         cloudflare: true,
     }
 }
-async fn secret(app: &App, key: &str) -> anyhow::Result<Option<String>> {
+pub(crate) async fn secret(app: &App, key: &str) -> anyhow::Result<Option<String>> {
     let value: Option<String> =
         sqlx::query_scalar("SELECT ciphertext FROM integration_secrets WHERE key=$1")
             .bind(key)
@@ -215,7 +215,7 @@ async fn secret(app: &App, key: &str) -> anyhow::Result<Option<String>> {
         .map(|v| crypto::open(app, &format!("integration:{key}"), &v))
         .transpose()
 }
-async fn save_secret(
+pub(crate) async fn save_secret(
     app: &App,
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     key: &str,
@@ -226,7 +226,12 @@ async fn save_secret(
         .bind(key).bind(ciphertext).execute(&mut **tx).await?;
     Ok(())
 }
-pub async fn github_token(app: &App) -> anyhow::Result<Option<String>> {
+pub async fn github_token(app: &App, repository: &str) -> anyhow::Result<Option<String>> {
+    if crate::github_app::active(app).await? {
+        return Ok(Some(
+            crate::github_app::repository_token(app, repository).await?,
+        ));
+    }
     secret(app, "github.token").await
 }
 async fn metadata(app: &App, provider: &str) -> anyhow::Result<Option<Value>> {
@@ -280,6 +285,11 @@ async fn connect_github(
     Json(input): Json<TokenInput>,
 ) -> ApiResult<Json<Value>> {
     owner(&app, &headers).await?;
+    if crate::github_app::active(&app).await.map_err(internal)? {
+        return Err(invalid(
+            "GitHub App access is active; manage repository access through the app",
+        ));
+    }
     valid_token(&input.token)?;
     let user = github(&app, &input.token)
         .get("/user")
@@ -315,7 +325,14 @@ async fn connect_github(
 }
 async fn repositories(State(app): State<App>, headers: HeaderMap) -> ApiResult<Json<Value>> {
     owner(&app, &headers).await?;
-    let token = github_token(&app)
+    if crate::github_app::active(&app).await.map_err(internal)? {
+        return Ok(Json(
+            crate::github_app::repositories(&app)
+                .await
+                .map_err(internal)?,
+        ));
+    }
+    let token = secret(&app, "github.token")
         .await
         .map_err(internal)?
         .ok_or_else(|| invalid("Connect GitHub first"))?;
@@ -360,7 +377,7 @@ async fn webhook_configuration(
         json!({"url":webhook_url(),"secret":secret,"events":["push"],"content_type":"json","poll_interval_seconds":60}),
     ))
 }
-fn signature_valid(secret: &str, signature: &str, body: &[u8]) -> bool {
+pub(crate) fn signature_valid(secret: &str, signature: &str, body: &[u8]) -> bool {
     let Some(hex) = signature.strip_prefix("sha256=") else {
         return false;
     };
@@ -407,6 +424,13 @@ async fn webhook(
     if !signature_valid(&secret, signature, &body) {
         return Err(crate::unauthorized());
     }
+    receive_webhook(&app, &headers, &body).await
+}
+pub(crate) async fn receive_webhook(
+    app: &App,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> ApiResult<(StatusCode, Json<Value>)> {
     let delivery = headers
         .get("x-github-delivery")
         .and_then(|v| v.to_str().ok())
@@ -418,7 +442,7 @@ async fn webhook(
         .ok_or_else(|| invalid("Missing event type"))?;
     let event = crate::text_field(event, 80)?;
     let payload: Value =
-        serde_json::from_slice(&body).map_err(|_| invalid("Invalid webhook JSON"))?;
+        serde_json::from_slice(body).map_err(|_| invalid("Invalid webhook JSON"))?;
     let mut tx = app.db.begin().await?;
     let inserted =
         sqlx::query("INSERT INTO github_deliveries(id,event) VALUES($1,$2) ON CONFLICT DO NOTHING")
@@ -452,7 +476,10 @@ pub async fn ensure_repository_webhook(app: &App, repository: &str) -> anyhow::R
             json!({"status":"polling","reason":"Set PC_PUBLIC_URL to enable inbound GitHub webhooks"}),
         );
     };
-    let token = github_token(app)
+    if crate::github_app::active(app).await? {
+        return Ok(json!({"status":"configured","mode":"github_app"}));
+    }
+    let token = secret(app, "github.token")
         .await?
         .ok_or_else(|| anyhow::anyhow!("GitHub is not connected"))?;
     let secret = secret(app, "github.webhook")
@@ -1222,10 +1249,6 @@ pub fn spawn_controller(app: App) {
     });
 }
 async fn poll_github(app: &App) -> anyhow::Result<()> {
-    let Some(token) = github_token(app).await? else {
-        return Ok(());
-    };
-    let provider = github(app, &token);
     let projects = sqlx::query("SELECT id,repository,branch FROM projects ORDER BY created_at")
         .fetch_all(&app.db)
         .await?;
@@ -1233,6 +1256,11 @@ async fn poll_github(app: &App) -> anyhow::Result<()> {
         let id: Uuid = project.get("id");
         let repository: String = project.get("repository");
         let branch: String = project.get("branch");
+        let token = match github_token(app, &repository).await {
+            Ok(Some(t)) => t,
+            _ => continue,
+        };
+        let provider = github(app, &token);
         let mut url = reqwest::Url::parse(&format!("{GH}/repos/{repository}/commits/"))?;
         url.path_segments_mut()
             .map_err(|_| anyhow::anyhow!("Invalid branch URL"))?

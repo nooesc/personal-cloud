@@ -36,7 +36,7 @@ For a proxy on another host or container network, deliberately choose the host b
 
 ### First deployment
 
-1. **Settings → GitHub:** connect a token with repository contents access. Repository administration permission enables automatic webhook registration. If inbound webhooks are unavailable, the control plane polls connected production branches.
+1. **Settings → GitHub:** register your GitHub App, link your owner identity, and choose repositories on personal or organization accounts. The app requests read-only source access and push events. [GitHub setup and recovery](docs/github-access.md). Existing PAT connections remain available as an advanced option until you link the app.
 2. **Settings → Cloudflare:** connect an API token, select the account and active domain zone, and provide an R2 bucket with S3 API credentials. The API validates credentials before saving them encrypted.
 3. **Add machine:** choose its location, roles, and tags. The first machine defaults to compute and builder roles. Copy the one-use installer command to a supported Linux host.
 4. **Private network:** the first installed machine becomes the fleet server. Give it a public WireGuard endpoint with reachable UDP port 51820 when joining machines across networks. Home nodes connect outbound to that server. A single machine can run without a public endpoint.
@@ -46,7 +46,7 @@ For a proxy on another host or container network, deliberately choose the host b
 
 The installer supports **Ubuntu 22.04/24.04 and Debian 12/13 with systemd**, on amd64 or arm64. It installs Docker, Nomad, and WireGuard, verifies release archive checksums, and runs the agent as a system service. Builder machines also install BuildKit. macOS machines require a Linux VM; see [fleet setup](infra/README.md).
 
-**Published release:** [v0.1.2](https://github.com/nooesc/personal-cloud/releases/tag/v0.1.2) includes agent downloads and public API, web, and builder images. Both `ghcr.io/nooesc/personal-cloud-api` and `ghcr.io/nooesc/personal-cloud-web` support Linux amd64 and arm64. Anonymous image pulls and a fresh default `bash scripts/start.sh` installation were verified: the published images served the dashboard, API, authenticated WebSockets, and persistent encrypted data without registry login or a source-build override. The `latest` API/web tags currently resolve to v0.1.2.
+**Published release:** [v0.2.0](https://github.com/nooesc/personal-cloud/releases/tag/v0.2.0) includes agent downloads and public API, web, and builder images. Both `ghcr.io/nooesc/personal-cloud-api` and `ghcr.io/nooesc/personal-cloud-web` support Linux amd64 and arm64. Anonymous image pulls and a fresh default `bash scripts/start.sh` installation were verified: the published images served the dashboard, API, authenticated WebSockets, and persistent encrypted data without registry login or a source-build override. The `latest` API/web tags currently resolve to v0.2.0.
 
 The default image tag is `latest`. Set `PC_VERSION=vX.Y.Z` in `.env.production` to pin both control-plane images to a release. To build an unpublished checkout or verify local changes instead:
 
@@ -65,7 +65,7 @@ The explicit source-build path downloads Rust/Node build dependencies inside Doc
 - **PostgreSQL:** provision a persistent database on a healthy database-role machine, attach `DATABASE_URL` to a service, reveal connection credentials explicitly, and monitor health. Database placement stays pinned. Removing a database preserves its volume.
 - **Domains:** provision Cloudflare Tunnel/DNS routing for healthy services and remove only the resources owned by Personal Cloud.
 - **Observability:** live fleet snapshots, deployment progress, activity, service logs, and allocation metrics. Connection failures remain visible; live failures never switch to sample data.
-- **Access:** single-owner authentication, hashed/revocable browser sessions, distinct one-use enrollment tokens and agent credentials, and encrypted provider credentials.
+- **Access:** GitHub owner sign-in, selected personal/organization repository access through GitHub App installations, owner-token recovery, hashed/revocable browser sessions, distinct one-use enrollment tokens and agent credentials, and encrypted provider credentials.
 
 See the [original V1 specification](docs/product/v1-spec.md), [API overview](docs/api.md), and [runtime interfaces](docs/runtime-contract.md).
 
@@ -99,7 +99,7 @@ This is a single-owner, single-control-plane implementation. It does not include
 
 The production package has been checked in an isolated Compose stack: built SSR and static assets, same-origin HTTP and WebSocket routing, owner sessions, origin rejection, persisted service settings, encrypted secrets, and restart recovery all passed. The local checks and disposable Linux harness also exercise API persistence, builds, scheduling, and failure handling. Live scoped Cloudflare/R2 credentials, an R2-backed image build/deployment, and public Tunnel/DNS/TLS routing have also been verified against a real account. These checks also do not prove a user's GitHub permissions, firewall, or multi-machine connectivity. A production deployment is ready only after its own provider connections, machine enrollment, immutable deployment, public route, and application database are observed working. The ten-minute clean-machine onboarding target is a release acceptance criterion, not an asserted timing guarantee.
 
-See [V1 verification](docs/verification-v1.md) for the executed acceptance checks and the connector acknowledgement fix in v0.1.2.
+See [V1 verification](docs/verification-v1.md) for the executed acceptance checks and the connector acknowledgement fix. See [GitHub access](docs/github-access.md) for the v0.2.0 sign-in and installation flow.
 
 ## Development
 

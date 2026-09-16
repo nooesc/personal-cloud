@@ -1,3 +1,4 @@
+import { GitHubAppPanel } from "./github";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
   Check,
@@ -232,63 +233,67 @@ export function Setup({
             {status(data.integrations.github).replaceAll("_", " ")}
           </span>
         </h2>
-        <p>
-          Choose a repository and deploy on every push to its production branch.
-        </p>
-        <form onSubmit={(e) => save(e, "/integrations/github")}>
-          <Field
-            label="GitHub access token"
-            name="token"
-            type="password"
-            required
-            placeholder="github_pat_…"
-          />
-          <p className="form-note">
-            Grant repository contents read access. Repository administration
-            enables automatic webhook setup; otherwise the control plane polls
-            for pushes.
-          </p>
-          <Submit busy={action.busy || !live}>Connect GitHub</Submit>
-        </form>
-        {status(data.integrations.github) === "connected" && (
+        <GitHubAppPanel live={live && !!data.generated_at} refresh={refresh} />
+        {(typeof data.integrations.github === "string" ||
+          data.integrations.github.mode !== "github_app") && (
           <details>
-            <summary>Webhook connection</summary>
-            <p className="form-note">
-              For a public control plane, register the payload URL and secret in
-              your repository.
-            </p>
-            <button
-              className="button secondary small"
-              onClick={() =>
-                action.run(
-                  async () =>
-                    setWebhook(await api("/integrations/github/webhook")),
-                  "Webhook details loaded",
-                )
-              }
-            >
-              Reveal webhook details
-            </button>
-            {webhook && (
-              <div className="stack">
-                {Object.entries(webhook).map(([key, value]) => (
-                  <Field key={key} label={key}>
-                    <Secret
-                      value={
-                        typeof value === "string"
-                          ? value
-                          : JSON.stringify(value)
-                      }
-                    />
-                  </Field>
-                ))}
+            <summary>Advanced: personal access token</summary>
+            <form onSubmit={(e) => save(e, "/integrations/github")}>
+              <Field
+                label="GitHub access token"
+                name="token"
+                type="password"
+                required
+                placeholder="github_pat_…"
+              />
+              <p className="form-note">
+                Grant repository contents read access. Repository administration
+                enables automatic webhook setup; otherwise the control plane
+                polls for pushes.
+              </p>
+              <Submit busy={action.busy || !live}>Connect GitHub</Submit>
+            </form>
+            {status(data.integrations.github) === "connected" && (
+              <details>
+                <summary>Webhook connection</summary>
+                <p className="form-note">
+                  For a public control plane, register the payload URL and
+                  secret in your repository.
+                </p>
                 <button
-                  className="text-button"
-                  onClick={() => setWebhook(undefined)}
+                  className="button secondary small"
+                  onClick={() =>
+                    action.run(
+                      async () =>
+                        setWebhook(await api("/integrations/github/webhook")),
+                      "Webhook details loaded",
+                    )
+                  }
                 >
-                  Hide details
+                  Reveal webhook details
                 </button>
-              </div>
+                {webhook && (
+                  <div className="stack">
+                    {Object.entries(webhook).map(([key, value]) => (
+                      <Field key={key} label={key}>
+                        <Secret
+                          value={
+                            typeof value === "string"
+                              ? value
+                              : JSON.stringify(value)
+                          }
+                        />
+                      </Field>
+                    ))}
+                    <button
+                      className="text-button"
+                      onClick={() => setWebhook(undefined)}
+                    >
+                      Hide details
+                    </button>
+                  </div>
+                )}
+              </details>
             )}
           </details>
         )}

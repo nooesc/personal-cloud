@@ -83,6 +83,7 @@ export type Domain = {
   error?: string;
 };
 export type Provider = {
+  mode?: string;
   status: string;
   login?: string;
   account_id?: string;

@@ -266,7 +266,7 @@ async fn postgres_webhook_atomic_deduplication_and_secret_isolation() -> anyhow:
         save_secret(&app,&mut tx,"github.webhook","test-webhook-secret").await?;
         save_secret(&app,&mut tx,"github.token","test-private-token").await?;
         tx.commit().await?;
-        assert_eq!(github_token(&app).await?,Some("test-private-token".into()));
+        assert_eq!(github_token(&app,"Owner/Repo").await?,Some("test-private-token".into()));
         let ciphertext:String=sqlx::query_scalar("SELECT ciphertext FROM integration_secrets WHERE key='github.token'").fetch_one(&db).await?;
         assert!(!ciphertext.contains("test-private-token"));
         assert!(crypto::open(&app,"integration:cloudflare.token",&ciphertext).is_err());

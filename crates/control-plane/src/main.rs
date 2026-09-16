@@ -1,4 +1,5 @@
 mod crypto;
+mod github_app;
 mod integrations;
 mod networking;
 mod runtime;
@@ -32,6 +33,7 @@ struct App {
     client: reqwest::Client,
     secret_key: Arc<[u8; 32]>,
 }
+#[derive(Debug)]
 struct ApiError(StatusCode, String);
 type ApiResult<T> = Result<T, ApiError>;
 impl IntoResponse for ApiError {
@@ -102,7 +104,7 @@ async fn owner(app: &App, headers: &HeaderMap) -> ApiResult<()> {
         return Err(unauthorized());
     }
     let cookie = session_cookie(headers).ok_or_else(unauthorized)?;
-    let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM owner_sessions WHERE token_hash=$1 AND admin_hash=$2 AND expires_at>now())").bind(hash(cookie)).bind(app.admin_hash.as_str()).fetch_one(&app.db).await?;
+    let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM owner_sessions s WHERE token_hash=$1 AND admin_hash=$2 AND expires_at>now() AND (s.github_user_id IS NULL OR EXISTS(SELECT 1 FROM github_owner g WHERE g.user_id=s.github_user_id)))").bind(hash(cookie)).bind(app.admin_hash.as_str()).fetch_one(&app.db).await?;
     if valid { Ok(()) } else { Err(unauthorized()) }
 }
 fn text_field(value: &str, max: usize) -> ApiResult<String> {
@@ -152,6 +154,7 @@ async fn main() -> anyhow::Result<()> {
     let router = Router::new()
         .merge(runtime::router())
         .merge(integrations::router())
+        .merge(github_app::router())
         .merge(networking::router())
         .route(
             "/install.sh",
@@ -216,6 +219,9 @@ async fn login(
     ) {
         return Err(unauthorized());
     }
+    issue_session(&app, None).await
+}
+async fn issue_session(app: &App, github_user_id: Option<i64>) -> ApiResult<Response> {
     let secure = if app.origin.starts_with("https://") {
         "; Secure"
     } else {
@@ -225,11 +231,14 @@ async fn login(
     sqlx::query("DELETE FROM owner_sessions WHERE expires_at<=now()")
         .execute(&app.db)
         .await?;
-    sqlx::query("INSERT INTO owner_sessions(token_hash,admin_hash) VALUES($1,$2)")
-        .bind(hash(&session))
-        .bind(app.admin_hash.as_str())
-        .execute(&app.db)
-        .await?;
+    sqlx::query(
+        "INSERT INTO owner_sessions(token_hash,admin_hash,github_user_id) VALUES($1,$2,$3)",
+    )
+    .bind(hash(&session))
+    .bind(app.admin_hash.as_str())
+    .bind(github_user_id)
+    .execute(&app.db)
+    .await?;
     let cookie = format!(
         "pc_session={session}; HttpOnly; SameSite=Strict; Path=/api; Max-Age=43200{secure}"
     );

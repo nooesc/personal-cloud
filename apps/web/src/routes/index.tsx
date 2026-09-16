@@ -1,3 +1,4 @@
+import { GitHubSignIn, githubMessages } from "../components/github";
 import { createFileRoute } from "@tanstack/react-router";
 import {
   useEffect,
@@ -87,6 +88,7 @@ function App() {
     [search, setSearch] = useState(""),
     [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
+    [githubNotice, setGithubNotice] = useState(""),
     [revealToken, setRevealToken] = useState(false),
     [busy, setBusy] = useState(false),
     [stream, setStream] = useState("Connecting"),
@@ -101,6 +103,9 @@ function App() {
   useEffect(() => {
     const params = new URLSearchParams(location.hash.slice(1));
     const savedPage = params.get("page");
+    const githubResult = params.get("github_error") || params.get("github");
+    if (githubResult && githubMessages[githubResult])
+      setGithubNotice(githubMessages[githubResult]);
     setPendingProject(params.get("project"));
     setRouteReady(true);
     if (
@@ -867,11 +872,23 @@ function App() {
               <Cloud size={13} /> A cloud of your own.
             </span>
             <span>
-              Personal Cloud <span className="muted">/</span> v0.1.2
+              Personal Cloud <span className="muted">/</span> v0.2.0
             </span>
           </footer>
         </main>
       </div>
+      {githubNotice && (
+        <div className="toast github-notice" role="status">
+          {githubNotice}
+          <button
+            className="text-button"
+            aria-label="Dismiss GitHub message"
+            onClick={() => setGithubNotice("")}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       {notice && (
         <div className="toast" role="status">
           <Check size={17} />
@@ -1073,10 +1090,7 @@ function App() {
             <form onSubmit={submit}>
               {modal === "login" && (
                 <>
-                  <p className="dialog-intro">
-                    Connect to the local Rust control plane. Enter the owner
-                    token from your checkout’s <code>.env</code> file.
-                  </p>
+                  <GitHubSignIn />
                   <label className="field">
                     Owner token
                     <input
@@ -1092,8 +1106,8 @@ function App() {
                   <div className="info-callout">
                     <LockKeyhole size={17} />
                     <span>
-                      Your token is sent to your local API. The session uses a
-                      protected cookie.
+                      Your token is sent only to this workspace. The session
+                      uses a protected cookie.
                     </span>
                   </div>
                   <button

@@ -2289,3 +2289,110 @@ details[open] summary {
     grid-template-columns: 1fr;
   }
 }
+
+/* GitHub identity and installation access share the existing setup vocabulary. */
+.github-access {
+  display: grid;
+  gap: 16px;
+}
+.github-access > p,
+.github-access h3,
+.github-identity p,
+.github-account p {
+  margin: 0;
+}
+.github-steps {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  list-style: none;
+  padding: 0;
+  margin: 4px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.github-steps li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.github-steps b {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+}
+.github-steps .complete {
+  color: var(--green);
+}
+.github-steps .complete b {
+  background: #1e2d22;
+  border-color: var(--line);
+}
+.github-identity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 15px;
+  background: var(--bg);
+  border-radius: 10px;
+}
+.github-accounts {
+  display: grid;
+  gap: 8px;
+}
+.github-account {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+}
+.github-account > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.github-account .button {
+  flex-shrink: 0;
+}
+.github-signin {
+  margin-bottom: 18px;
+}
+.signin-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 20px;
+}
+.signin-divider::before,
+.signin-divider::after {
+  content: "";
+  height: 1px;
+  background: var(--line);
+  flex: 1;
+}
+@media (max-width: 520px) {
+  .github-steps {
+    gap: 9px;
+  }
+  .github-account {
+    align-items: flex-start;
+  }
+  .github-access .action-row {
+    align-items: stretch;
+  }
+}
+.github-notice {
+  max-width: min(580px, calc(100vw - 32px));
+  white-space: normal;
+  z-index: 200;
+}
+.github-notice .text-button {
+  flex-shrink: 0;
+}
