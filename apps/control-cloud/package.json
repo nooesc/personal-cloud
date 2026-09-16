@@ -1,0 +1,23 @@
+{
+  "name": "@personal-cloud/control-cloud",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --port 4321",
+    "typegen": "wrangler types --env-interface CloudflareEnv",
+    "typecheck": "tsc --noEmit",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "deploy": "wrangler deploy",
+    "db:local": "wrangler d1 migrations apply DIRECTORY --local",
+    "db:remote": "wrangler d1 migrations apply DIRECTORY --remote",
+    "test": "tsx --test src/auth/auth.test.mjs src/runtime/runtime.test.mjs test/*.test.*",
+    "dev:cloud": "wrangler dev --port 4321"
+  },
+  "devDependencies": {
+    "wrangler": "latest",
+    "@cloudflare/workers-types": "latest",
+    "typescript": "7.0.2",
+    "tsx": "latest",
+    "@types/node": "26.5.1"
+  }
+}

@@ -8,7 +8,10 @@
     "build": "pnpm --filter @personal-cloud/web build",
     "typecheck": "pnpm --filter @personal-cloud/web typecheck",
     "check": "cargo fmt --check && cargo test --workspace && pnpm build && pnpm typecheck",
-    "smoke": "python3 scripts/smoke.py"
+    "smoke": "python3 scripts/smoke.py",
+    "dev:cloud": "pnpm --parallel --filter @personal-cloud/control-cloud --filter @personal-cloud/web run dev:cloud",
+    "build:cloud": "pnpm --filter @personal-cloud/control-cloud build && pnpm --filter @personal-cloud/web build:cloud",
+    "check:cloud": "pnpm --filter @personal-cloud/control-cloud typecheck && pnpm --filter @personal-cloud/control-cloud test && pnpm --filter @personal-cloud/web typecheck && pnpm build:cloud"
   },
   "devDependencies": {
     "prettier": "^3.9.6"

@@ -10,6 +10,7 @@ Owner requests accept `Authorization: Bearer <PC_ADMIN_TOKEN>` or the HttpOnly `
 |---|---|---|
 | Session | `POST /api/session`, `DELETE /api/session` | Create a hashed, revocable 12-hour session or sign out |
 | Overview | `GET /api/snapshot`, `WS /api/events` | Six core objects, integration status, durable activity; snapshots on change and every ten seconds |
+| Fleet history | `GET /api/fleet/history` | Last hour of per-machine CPU, memory and disk samples recorded from heartbeats (`{since, step_seconds, machines: {id: [{at, cpu, mem, disk}]}}`); samples are retained for 24 hours and removed with the machine |
 | Projects | `POST /api/projects`, `DELETE /api/projects/:id` | GitHub repository, production branch, owned resources |
 | Services | `POST /api/projects/:id/services`, `PUT/DELETE /api/services/:id` | Port, health path, repository directory, architecture, resource limits, placement, automatic deploy |
 | Deployments | `POST /api/services/:id/deploy`, `GET /api/deployments/:id` | Durable source-build or immutable-image job; ordered steps and explicit errors |
@@ -39,3 +40,11 @@ Owner requests accept `Authorization: Bearer <PC_ADMIN_TOKEN>` or the HttpOnly `
 WebSockets recheck session expiry and revocation. Fleet reconnects receive a complete snapshot. Service streams send `{type:"observability",lines,metrics,restarts,at}` or an explicit unavailable state. Network counters require the allocation's own agent; no counters are invented when the runtime cannot measure them.
 
 See [runtime contracts](runtime-contract.md) for request examples and [the V1 specification](product/v1-spec.md) for product behavior.
+
+## Cloudflare-hosted edition
+
+The hosted backend preserves the fleet/project/service API under `/api`, with GitHub sessions replacing the single-owner token. `GET /api/session` identifies hosted mode and the current account/workspace. `POST /api/workspaces` creates a separate cloud; `POST /api/workspaces/:id/select` switches the session. Workspace owners manage membership under `/api/workspace/members`. GitHub App installation grants are selected explicitly per workspace.
+
+Every authenticated workspace request is routed to that workspace's Durable Object. Machine credentials and single-use enrollment tokens resolve through the directory to exactly one workspace. Global `/api/events` and service `/api/services/:id/events` WebSockets require the same session and membership checks.
+
+`POST /api/registry/credentials` returns that workspace's scoped OCI credentials. `/v2/` is the managed registry backed by R2. The operator-only `/api/operator/import` endpoint is disabled unless `MIGRATION_TOKEN` is configured. See [hosted setup](cloudflare-hosted.md) and [migration](hosted-migration.md) for deployment and supported migration boundaries.

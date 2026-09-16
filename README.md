@@ -1,5 +1,12 @@
 # Personal Cloud
 
+## Cloudflare hosted edition
+
+A multi-customer deployment is available in `apps/control-cloud` and the existing web app's Cloudflare build. GitHub accounts own separate workspaces, fleet agents connect over HTTPS, and management state runs on Workers, D1, SQLite Durable Objects and R2. Customer machines run application workloads. See [hosted architecture and deployment](docs/cloudflare-hosted.md) and [migration](docs/hosted-migration.md).
+
+`pnpm dev:cloud` starts the hosted local runtime after its D1 migrations and secret setup. `pnpm check:cloud` checks the hosted implementation. The Compose instructions below describe the retained self-hosted edition.
+
+
 **Your hardware. Your cloud. One place to make things run.**
 
 A self-hosted deployment platform for Linux machines at home and in the cloud. Connect GitHub and Cloudflare, install a machine, and deploy applications through one dashboard.
@@ -95,7 +102,7 @@ Back up application PostgreSQL volumes separately. A control-plane backup contai
 
 ## Current limits and validation boundary
 
-This is a single-owner, single-control-plane implementation. It does not include billing, teams/SSO, automatic scaling, database HA, automatic database migration, automated backups, or a credential-rotation UI. Service metrics expose the runtime's reported allocation data; the dashboard is not a monitoring warehouse.
+The self-hosted Compose edition is a single-owner, single-control-plane implementation. It does not include billing, teams/SSO, automatic scaling, database HA, automatic database migration, automated backups, or a credential-rotation UI. Service metrics expose the runtime's reported allocation data; the dashboard is not a monitoring warehouse.
 
 The production package has been checked in an isolated Compose stack: built SSR and static assets, same-origin HTTP and WebSocket routing, owner sessions, origin rejection, persisted service settings, encrypted secrets, and restart recovery all passed. The local checks and disposable Linux harness also exercise API persistence, builds, scheduling, and failure handling. Live scoped Cloudflare/R2 credentials, an R2-backed image build/deployment, and public Tunnel/DNS/TLS routing have also been verified against a real account. These checks also do not prove a user's GitHub permissions, firewall, or multi-machine connectivity. A production deployment is ready only after its own provider connections, machine enrollment, immutable deployment, public route, and application database are observed working. The ten-minute clean-machine onboarding target is a release acceptance criterion, not an asserted timing guarantee.
 

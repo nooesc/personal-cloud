@@ -5,23 +5,39 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 4310 --strictPort",
     "build": "vite build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.worker.json",
+    "dev:cloud": "vite --mode cloudflare --host 127.0.0.1 --port 4320 --strictPort",
+    "build:cloud": "vite build --mode cloudflare",
+    "deploy:cloud": "pnpm build:cloud && wrangler deploy",
+    "cf-typegen": "wrangler types src/cloudflare-env.d.ts"
   },
   "dependencies": {
-    "@fontsource-variable/dm-sans": "^5.3.0",
-    "@fontsource-variable/manrope": "^5.3.0",
+    "@fontsource-variable/geist": "5.3.0",
+    "@fontsource-variable/geist-mono": "5.3.0",
+    "@tailwindcss/vite": "4.3.3",
     "@tanstack/react-router": "1.170.36",
     "@tanstack/react-start": "1.168.54",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "d3-scale": "4.0.2",
+    "d3-shape": "3.2.0",
     "lucide-react": "1.46.0",
+    "motion": "13.3.0",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "tailwind-merge": "3.7.0",
+    "tailwindcss": "4.3.3"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.54.10",
+    "@types/d3-scale": "4.0.9",
+    "@types/d3-shape": "3.2.0",
     "@types/node": "26.5.1",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.1",
     "typescript": "7.0.2",
-    "vite": "8.3.0"
+    "vite": "8.3.0",
+    "wrangler": "^4.132.0"
   }
 }

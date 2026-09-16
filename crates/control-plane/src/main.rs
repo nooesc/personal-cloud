@@ -171,6 +171,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/session", post(login).delete(logout))
         .route("/api/snapshot", get(get_snapshot))
+        .route("/api/fleet/history", get(fleet_history))
         .route("/api/projects", post(create_project))
         .route("/api/projects/{id}/services", post(create_service))
         .route("/api/enrollment-tokens", post(create_enrollment))
@@ -485,19 +486,64 @@ async fn heartbeat(
 ) -> ApiResult<Json<Value>> {
     let credential = bearer(&headers).ok_or_else(unauthorized)?;
     report.validate().map_err(invalid)?;
+    let mut tx = app.db.begin().await?;
     let result = sqlx::query(
         "UPDATE machines SET report=$1,last_seen=now() WHERE id=$2 AND credential_hash=$3",
     )
     .bind(json!(report))
     .bind(id)
     .bind(hash(credential))
-    .execute(&app.db)
+    .execute(&mut *tx)
     .await?;
     if result.rows_affected() != 1 {
         return Err(unauthorized());
     }
+    // One row per heartbeat (10 s); a day of retention bounds the table at ~8.6k rows per machine.
+    sqlx::query(
+        "INSERT INTO machine_samples(machine_id,cpu,mem,disk) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING",
+    )
+    .bind(id)
+    .bind(report.cpu_percent)
+    .bind(report.memory_used as i64)
+    .bind(report.disk_used as i64)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "DELETE FROM machine_samples WHERE machine_id=$1 AND at < now()-interval '24 hours'",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     app.events.send(()).ok();
     Ok(Json(json!({"ok":true})))
+}
+/// Last hour of vitals per machine, oldest first, for the fleet charts.
+async fn fleet_history(State(app): State<App>, headers: HeaderMap) -> ApiResult<Json<Value>> {
+    owner(&app, &headers).await?;
+    let since = Utc::now() - Duration::from_secs(3600);
+    let rows = sqlx::query(
+        "SELECT machine_id, at, cpu, mem, disk FROM machine_samples WHERE at >= $1 ORDER BY machine_id, at",
+    )
+    .bind(since)
+    .fetch_all(&app.db)
+    .await?;
+    let mut machines = serde_json::Map::new();
+    for row in rows {
+        let id: Uuid = row.get("machine_id");
+        let at: DateTime<Utc> = row.get("at");
+        let point = json!({"at":at,"cpu":row.get::<f32,_>("cpu"),"mem":row.get::<i64,_>("mem"),"disk":row.get::<i64,_>("disk")});
+        match machines
+            .entry(id.to_string())
+            .or_insert_with(|| Value::Array(Vec::new()))
+        {
+            Value::Array(points) => points.push(point),
+            _ => unreachable!(),
+        }
+    }
+    Ok(Json(
+        json!({"since":since,"step_seconds":10,"machines":machines}),
+    ))
 }
 async fn events(
     State(app): State<App>,

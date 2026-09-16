@@ -1,0 +1,1 @@
+{ "extends": "./tsconfig.json", "compilerOptions": { "lib": ["ES2022"], "types": [] }, "include": ["src/cloudflare.ts", "src/cloudflare-env.d.ts"], "exclude": [] }

@@ -1,14 +1,15 @@
 import { useEffect, useState } from "react";
 import {
+  ArrowUpRight,
   Box,
-  Check,
   GitBranch,
-  GitFork,
-  LoaderCircle,
   Plus,
   Rocket,
+  Trash2,
+  X,
 } from "lucide-react";
 import { api, type Deployment, type Project, type Service } from "../lib/data";
+import { cn } from "../lib/utils";
 import {
   Feedback,
   Field,
@@ -20,6 +21,42 @@ import {
   type LiveProps,
 } from "./live";
 import { Databases, Domains } from "./resources";
+import { Badge } from "./ui/badge";
+import { Button } from "./ui/button";
+import { Input } from "./ui/input";
+import { Alert, EmptyState, Meta, StatusDot } from "./ui/misc";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
+
+const logClasses =
+  "rounded-md border border-border bg-muted/40 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-all custom-logs-scrollbar max-h-80 min-h-20 overflow-auto";
+const summaryClasses =
+  "cursor-pointer select-none text-sm font-medium text-muted-foreground hover:text-foreground";
+
+function statusVariant(status?: string) {
+  switch (status) {
+    case "healthy":
+    case "running":
+      return "green" as const;
+    case "queued":
+    case "building":
+    case "deploying":
+    case "pending":
+      return "yellow" as const;
+    case "failed":
+    case "unhealthy":
+      return "red" as const;
+    default:
+      return "blank" as const;
+  }
+}
+function ago(iso: string) {
+  const seconds = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
+
 export function ProjectDetail({
   project,
   data,
@@ -38,138 +75,202 @@ export function ProjectDetail({
   const services = data.services.filter((s) => s.project_id === project.id),
     service = services.find((s) => s.id === serviceId);
   return (
-    <>
-      <div className="project-detail-meta">
-        <GitFork size={16} />
-        {project.repository}
-        <span>
-          <GitBranch size={13} />
-          {project.branch}
-        </span>
-      </div>
-      <div className="tabs" role="tablist" aria-label="Project sections">
-        {["Services", "Environment", "Databases", "Domains"].map((t) => (
-          <button
-            role="tab"
-            aria-selected={tab === t}
-            key={t}
-            className={tab === t ? "active" : ""}
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
+          <a
+            href={
+              /^https?:\/\//.test(project.repository)
+                ? project.repository
+                : `https://github.com/${project.repository}`
+            }
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex min-w-0 items-center gap-1 font-mono text-[11px] text-muted-foreground tabular-nums hover:text-foreground"
+          >
+            <span className="truncate">{project.repository}</span>
+            <ArrowUpRight className="size-3 shrink-0" />
+          </a>
+          <Badge variant="outline">
+            <GitBranch />
+            {project.branch}
+          </Badge>
+          <Meta>
+            Created {new Date(project.created_at).toLocaleDateString()}
+          </Meta>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button size="sm" onClick={addService}>
+            <Plus />
+            Add service
+          </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            disabled={!live || action.busy}
             onClick={() => {
-              setTab(t);
-              setServiceId(undefined);
+              if (
+                confirm(
+                  `Delete project ${project.name} and stop its services? Database volumes are preserved.`,
+                )
+              )
+                void action.run(async () => {
+                  await api(`/projects/${project.id}`, undefined, "DELETE");
+                  await refresh();
+                  onRemove();
+                }, "Project deleted");
             }}
           >
-            {t}
-          </button>
-        ))}
+            <Trash2 />
+            Remove
+          </Button>
+        </div>
       </div>
+      <Feedback action={action} />
       {!live && (
-        <p className="form-note">
+        <Alert>
           This is sample data. Connect your live workspace to run deployments
           and change infrastructure.
-        </p>
+        </Alert>
       )}
-      {tab === "Services" &&
-        (service ? (
-          <>
-            <button
-              className="text-button"
-              onClick={() => setServiceId(undefined)}
-            >
-              ← All services
-            </button>
+      <Tabs
+        value={tab}
+        onValueChange={(next) => {
+          setTab(next);
+          setServiceId(undefined);
+        }}
+        className="gap-4"
+      >
+        <TabsList
+          variant="line"
+          aria-label="Project sections"
+          className="w-full justify-start overflow-x-auto border-b border-border"
+        >
+          {["Services", "Environment", "Databases", "Domains"].map((t) => (
+            <TabsTrigger key={t} value={t} className="flex-none">
+              {t}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+        <TabsContent value="Services" className="flex flex-col gap-6">
+          {services.length ? (
+            <div className="grid gap-3 sm:grid-cols-2">
+              {services.map((s) => (
+                <ServiceCard
+                  key={s.id}
+                  service={s}
+                  host={
+                    data.machines.find(
+                      (m) => m.id === (s.machine_id ?? s.demo_machine),
+                    )?.report.hostname ?? s.placement.kind
+                  }
+                  selected={s.id === serviceId}
+                  onSelect={() =>
+                    setServiceId(s.id === serviceId ? undefined : s.id)
+                  }
+                />
+              ))}
+            </div>
+          ) : (
+            <EmptyState
+              icon={<Box />}
+              title={`Add the first service to ${project.name}`}
+              description="We build from your repository and run it on your fleet."
+              action={
+                <Button size="sm" variant="outline" onClick={addService}>
+                  <Plus />
+                  Add service
+                </Button>
+              }
+            />
+          )}
+          {service && (
             <ServiceDetail
+              key={service.id}
               service={service}
               data={data}
               refresh={refresh}
               live={live}
+              onClose={() => setServiceId(undefined)}
               onRemove={() => setServiceId(undefined)}
             />
-          </>
-        ) : (
-          <>
-            <div className="detail-heading">
-              <h3>Services</h3>
-              <button className="button secondary small" onClick={addService}>
-                <Plus size={14} />
-                Add service
-              </button>
-            </div>
-            {services.map((s) => (
-              <button
-                key={s.id}
-                className="service-row service-select"
-                onClick={() => setServiceId(s.id)}
-              >
-                <Box size={18} />
-                <div>
-                  <strong>{s.name}</strong>
-                  <small>
-                    Port {s.port} ·{" "}
-                    {data.machines.find(
-                      (m) => m.id === (s.machine_id ?? s.demo_machine),
-                    )?.report.hostname ?? s.placement.kind}
-                  </small>
-                </div>
-                <span
-                  className={`status-pill ${s.status ?? s.demo_status ?? "pending"}`}
-                >
-                  {s.status ?? s.demo_status ?? "Not deployed"}
-                </span>
-              </button>
-            ))}
-            {!services.length && (
-              <div className="quiet-state">
-                <Box />
-                <p>Add the first service to {project.name}.</p>
-                <small>
-                  We build from your repository and run it on your fleet.
-                </small>
-              </div>
-            )}
-            <div className="danger-zone">
-              <button
-                className="text-button danger"
-                disabled={!live || action.busy}
-                onClick={() => {
-                  if (
-                    confirm(
-                      `Delete project ${project.name} and stop its services? Database volumes are preserved.`,
-                    )
-                  )
-                    void action.run(async () => {
-                      await api(`/projects/${project.id}`, undefined, "DELETE");
-                      await refresh();
-                      onRemove();
-                    }, "Project deleted");
-                }}
-              >
-                Delete project
-              </button>
-              <Feedback action={action} />
-            </div>
-          </>
-        ))}
-      {tab === "Environment" && <Environment project={project} live={live} />}{" "}
-      {tab === "Databases" && (
-        <Databases
-          data={data}
-          refresh={refresh}
-          live={live}
-          projectId={project.id}
-        />
-      )}{" "}
-      {tab === "Domains" && (
-        <Domains
-          data={data}
-          refresh={refresh}
-          live={live}
-          projectId={project.id}
-        />
-      )}
-    </>
+          )}
+        </TabsContent>
+        <TabsContent value="Environment">
+          <Environment project={project} live={live} />
+        </TabsContent>
+        <TabsContent value="Databases">
+          <Databases
+            data={data}
+            refresh={refresh}
+            live={live}
+            projectId={project.id}
+          />
+        </TabsContent>
+        <TabsContent value="Domains">
+          <Domains
+            data={data}
+            refresh={refresh}
+            live={live}
+            projectId={project.id}
+          />
+        </TabsContent>
+      </Tabs>
+    </div>
   );
 }
+
+function ServiceCard({
+  service: s,
+  host,
+  selected,
+  onSelect,
+}: {
+  service: Service;
+  host: string;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const status = s.status ?? s.demo_status;
+  return (
+    <div
+      className={cn(
+        "gh-surface gh-interactive relative flex min-w-0 flex-col gap-2 rounded-lg p-4",
+        selected && "border-primary/60 ring-2 ring-primary/30",
+      )}
+    >
+      <button
+        type="button"
+        aria-pressed={selected}
+        aria-label={`${selected ? "Close" : "Open"} ${s.name}`}
+        onClick={onSelect}
+        className="absolute inset-0 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+      />
+      <div className="flex min-w-0 items-center gap-2">
+        <StatusDot status={status} />
+        <span className="truncate text-[15px] font-medium">{s.name}</span>
+        <Badge variant={statusVariant(status)} className="ml-auto capitalize">
+          {status ?? "Not deployed"}
+        </Badge>
+      </div>
+      <Meta className="truncate">
+        :{s.port} · {host} · {s.root_directory ?? "."}
+      </Meta>
+      {s.address && (
+        <a
+          href={s.address}
+          target="_blank"
+          rel="noreferrer"
+          className="relative z-10 inline-flex w-fit items-center gap-1 font-mono text-[11px] text-muted-foreground tabular-nums hover:text-foreground"
+        >
+          <span className="truncate">{s.address}</span>
+          <ArrowUpRight className="size-3 shrink-0" />
+        </a>
+      )}
+    </div>
+  );
+}
+
 function Environment({ project, live }: { project: Project; live: boolean }) {
   const [variables, setVariables] = useState<
       { key: string; updated_at: string }[]
@@ -186,73 +287,91 @@ function Environment({ project, live }: { project: Project; live: boolean }) {
     if (live) void action.run(load, "").finally(() => setLoading(false));
   }, [project.id, live]);
   return (
-    <>
-      <p className="dialog-intro">
+    <div className="flex flex-col gap-6">
+      <p className="text-sm text-muted-foreground">
         Encrypted variables are applied on the next deployment. Reveal a value
         only when you need it.
       </p>
-      {loading && <p role="status">Loading environment…</p>}
-      <div className="stack">
-        {variables.map((v) => (
-          <div className="variable-row" key={v.key}>
-            <div>
-              <code>{v.key}</code>
-              <small>Updated {new Date(v.updated_at).toLocaleString()}</small>
-            </div>
-            {secret?.key === v.key ? (
-              <>
-                <Secret value={secret.value} />
-                <button
-                  className="text-button"
-                  onClick={() => setSecret(undefined)}
-                >
-                  Hide
-                </button>
-              </>
-            ) : (
-              <>
-                <span className="muted">••••••••</span>
-                <button
-                  className="text-button"
-                  disabled={action.busy}
-                  onClick={() =>
-                    action.run(async () => {
-                      const result = await api<{ value: string }>(
-                        `${path}/${encodeURIComponent(v.key)}/reveal`,
-                      );
-                      setSecret({ key: v.key, value: result.value });
-                    }, "")
-                  }
-                >
-                  Reveal
-                </button>
-              </>
-            )}
-            <button
-              className="text-button danger"
-              disabled={action.busy}
-              onClick={() => {
-                if (confirm(`Delete ${v.key}? Applies on next deployment.`))
-                  void action.run(async () => {
-                    await api(
-                      `${path}/${encodeURIComponent(v.key)}`,
-                      undefined,
-                      "DELETE",
-                    );
-                    setSecret(undefined);
-                    await load();
-                  }, "Variable deleted");
-              }}
+      {loading && (
+        <Meta role="status" className="block">
+          Loading environment…
+        </Meta>
+      )}
+      {variables.length > 0 && (
+        <div className="divide-y divide-border rounded-lg border border-border">
+          {variables.map((v) => (
+            <div
+              className="flex flex-wrap items-center gap-x-3 gap-y-2 p-3"
+              key={v.key}
             >
-              Delete
-            </button>
-          </div>
-        ))}
-      </div>
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <code className="truncate font-mono text-xs">{v.key}</code>
+                <Meta title={new Date(v.updated_at).toLocaleString()}>
+                  Updated {ago(v.updated_at)}
+                </Meta>
+              </div>
+              <div className="ml-auto flex min-w-0 items-center gap-2">
+                {secret?.key === v.key ? (
+                  <>
+                    <Secret value={secret.value} />
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      onClick={() => setSecret(undefined)}
+                    >
+                      Hide
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Meta aria-hidden>••••••••</Meta>
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      disabled={action.busy}
+                      onClick={() =>
+                        action.run(async () => {
+                          const result = await api<{ value: string }>(
+                            `${path}/${encodeURIComponent(v.key)}/reveal`,
+                          );
+                          setSecret({ key: v.key, value: result.value });
+                        }, "")
+                      }
+                    >
+                      Reveal
+                    </Button>
+                  </>
+                )}
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  className="text-destructive hover:text-destructive"
+                  disabled={action.busy}
+                  onClick={() => {
+                    if (confirm(`Delete ${v.key}? Applies on next deployment.`))
+                      void action.run(async () => {
+                        await api(
+                          `${path}/${encodeURIComponent(v.key)}`,
+                          undefined,
+                          "DELETE",
+                        );
+                        setSecret(undefined);
+                        await load();
+                      }, "Variable deleted");
+                  }}
+                >
+                  Delete
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
       {!variables.length && !loading && (
-        <p className="empty-copy">No variables yet.</p>
+        <Meta className="block">No variables yet.</Meta>
       )}
       <form
+        className="flex flex-col gap-4"
         onSubmit={(e) => {
           e.preventDefault();
           const element = e.currentTarget,
@@ -269,10 +388,10 @@ function Environment({ project, live }: { project: Project; live: boolean }) {
           }, "Variable saved. Redeploy services to apply it.");
         }}
       >
-        <h3>Add or update variable</h3>
-        <div className="form-columns">
+        <span className="gh-eyebrow">Add or update variable</span>
+        <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Key">
-            <input
+            <Input
               name="key"
               required
               pattern="[A-Za-z_][A-Za-z0-9_]*"
@@ -281,12 +400,15 @@ function Environment({ project, live }: { project: Project; live: boolean }) {
           </Field>
           <Field label="Value" name="value" type="password" />
         </div>
-        <Submit busy={action.busy || !live}>Save variable</Submit>
+        <div>
+          <Submit busy={action.busy || !live}>Save variable</Submit>
+        </div>
       </form>
       <Feedback action={action} />
-    </>
+    </div>
   );
 }
+
 function logText(line: unknown) {
   if (typeof line === "string") return line;
   if (line && typeof line === "object") {
@@ -300,13 +422,15 @@ function logText(line: unknown) {
   }
   return String(line);
 }
+
 function ServiceDetail({
   service: s,
   data,
   refresh,
   live,
+  onClose,
   onRemove,
-}: { service: Service; onRemove: () => void } & LiveProps) {
+}: { service: Service; onClose: () => void; onRemove: () => void } & LiveProps) {
   const [tab, setTab] = useState("Deployments"),
     [selected, setSelected] = useState<string>(),
     [deployment, setDeployment] = useState<Deployment>(),
@@ -321,9 +445,11 @@ function ServiceDetail({
     active = selected ?? deployments[0]?.id ?? s.current_deployment_id,
     deploying = deployments.some((d) =>
       ["queued", "building", "deploying"].includes(d.status),
-    );
+    ),
+    status = s.status ?? s.demo_status,
+    host = data.machines.find((m) => m.id === s.machine_id)?.report.hostname;
   useEffect(() => {
-    if (!live || !["Logs", "Metrics"].includes(tab)) return;
+    if (!live || tab !== "Logs") return;
     let ended = false,
       socket: WebSocket | undefined,
       retry: ReturnType<typeof setTimeout>;
@@ -394,138 +520,232 @@ function ServiceDetail({
     };
   }, [active, s.id, tab, live]);
   return (
-    <div className="stack">
-      <div className="detail-heading">
-        <div>
-          <h3>{s.name}</h3>
-          <small className="muted">
-            {s.address ?? "No running address"} · Port {s.port}
-          </small>
+    <section
+      aria-label={`${s.name} service`}
+      className="gh-surface flex flex-col gap-4 rounded-lg p-4 sm:p-6"
+    >
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex min-w-0 flex-col gap-1.5">
+          <div className="flex min-w-0 items-center gap-2">
+            <StatusDot status={status} />
+            <span className="truncate text-[15px] font-medium">{s.name}</span>
+            <Badge variant={statusVariant(status)} className="capitalize">
+              {status ?? "Not deployed"}
+            </Badge>
+          </div>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            {s.address ? (
+              <a
+                href={s.address}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 font-mono text-[11px] text-muted-foreground tabular-nums hover:text-foreground"
+              >
+                {s.address}
+                <ArrowUpRight className="size-3" />
+              </a>
+            ) : (
+              <Meta>No running address</Meta>
+            )}
+            <Meta>:{s.port}</Meta>
+            <Meta>{host ?? "Awaiting placement"}</Meta>
+            <Meta className="truncate" title={s.image_digest}>
+              {s.image_digest
+                ? `${s.image_digest.slice(0, 34)}…`
+                : "No image deployed"}
+            </Meta>
+          </div>
         </div>
-        <button
-          className="button primary"
-          disabled={!live || action.busy || deploying}
-          onClick={() =>
-            action.run(async () => {
-              const d = await api<Deployment>(`/services/${s.id}/deploy`, {});
-              setSelected(undefined);
-              setTab("Deployments");
-              await refresh();
-            }, "Deployment queued")
-          }
-        >
-          <Rocket size={15} />
-          Deploy latest
-        </button>
-      </div>
-      <div className="service-metadata">
-        <span className={`status-pill ${s.status ?? "pending"}`}>
-          {s.status ?? s.demo_status ?? "Not deployed"}
-        </span>
-        <span>
-          {data.machines.find((m) => m.id === s.machine_id)?.report.hostname ??
-            "Awaiting placement"}
-        </span>
-        <code>
-          {s.image_digest
-            ? `${s.image_digest.slice(0, 34)}…`
-            : "No image deployed"}
-        </code>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button
+            size="sm"
+            disabled={!live || action.busy || deploying}
+            onClick={() =>
+              action.run(async () => {
+                await api<Deployment>(`/services/${s.id}/deploy`, {});
+                setSelected(undefined);
+                setTab("Deployments");
+                await refresh();
+              }, "Deployment queued")
+            }
+          >
+            <Rocket />
+            Deploy latest
+          </Button>
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            aria-label="Close service"
+            onClick={onClose}
+          >
+            <X />
+          </Button>
+        </div>
       </div>
       <Feedback action={action} />
-      <div className="tabs" role="tablist" aria-label="Service sections">
-        {["Deployments", "Logs", "Metrics", "Configuration"].map((t) => (
-          <button
-            role="tab"
-            aria-selected={tab === t}
-            key={t}
-            className={tab === t ? "active" : ""}
-            onClick={() => setTab(t)}
+      <Tabs value={tab} onValueChange={setTab} className="gap-4">
+        <TabsList
+          variant="line"
+          aria-label="Service sections"
+          className="w-full justify-start overflow-x-auto border-b border-border"
+        >
+          {["Overview", "Deployments", "Logs"].map((t) => (
+            <TabsTrigger key={t} value={t} className="flex-none">
+              {t}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+        <TabsContent value="Overview">
+          <form
+            className="flex flex-col gap-4"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const form = new FormData(e.currentTarget);
+              void action.run(async () => {
+                await api(`/services/${s.id}`, serviceFields(form), "PUT");
+                await refresh();
+              }, "Configuration saved. Deploy to apply changes.");
+            }}
           >
-            {t}
-          </button>
-        ))}
-      </div>
-      {tab === "Deployments" && (
-        <>
+            <ServiceFields data={data} service={s} />
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
+              <Submit busy={action.busy || !live}>Save configuration</Submit>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={!live || action.busy}
+                onClick={() => {
+                  if (confirm(`Stop and delete service ${s.name}?`))
+                    void action.run(async () => {
+                      await api(`/services/${s.id}`, undefined, "DELETE");
+                      await refresh();
+                      onRemove();
+                    }, "Service deleted");
+                }}
+              >
+                <Trash2 />
+                Delete service
+              </Button>
+            </div>
+          </form>
+        </TabsContent>
+        <TabsContent value="Deployments" className="flex flex-col gap-4">
           {deployment && (
-            <section className="deployment-progress">
-              <div className="detail-heading">
-                <h3>Deployment {deployment.id.slice(0, 8)}</h3>
-                <span className={`status-pill ${deployment.status}`}>
-                  {deployment.status}
+            <section className="flex flex-col gap-3 rounded-lg border border-border p-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <StatusDot status={deployment.status} />
+                <span className="text-sm font-medium">
+                  Deployment{" "}
+                  <span className="font-mono tabular-nums">
+                    {deployment.id.slice(0, 8)}
+                  </span>
                 </span>
+                <Badge
+                  variant={statusVariant(deployment.status)}
+                  className="capitalize"
+                >
+                  {deployment.status.replaceAll("_", " ")}
+                </Badge>
+                <Meta className="ml-auto">
+                  {deployment.step?.replaceAll("_", " ")}
+                  {deployment.commit_sha &&
+                    ` · ${deployment.commit_sha.slice(0, 8)}`}
+                </Meta>
               </div>
-              <p className="muted">
-                {deployment.step?.replaceAll("_", " ")}{" "}
-                {deployment.commit_sha &&
-                  `· ${deployment.commit_sha.slice(0, 8)}`}
-              </p>
               <BuildProgress deployment={deployment} />
             </section>
           )}
-          {deployments.map((d) => (
-            <div className="deployment-row" key={d.id}>
-              <button className="text-button" onClick={() => setSelected(d.id)}>
-                <code>{d.commit_sha?.slice(0, 8) ?? d.id.slice(0, 8)}</code>
-                <span>{d.status}</span>
-                <small>{new Date(d.created_at).toLocaleString()}</small>
-              </button>
-              <button
-                className="button secondary small"
-                disabled={
-                  !live ||
-                  action.busy ||
-                  !d.image_digest ||
-                  deploying ||
-                  !["healthy", "rolled_back"].includes(d.status) ||
-                  d.id === s.current_deployment_id
-                }
-                title={
-                  deploying
-                    ? "Wait for the active deployment to finish"
-                    : !["healthy", "rolled_back"].includes(d.status)
-                      ? "Only a previously healthy deployment can be restored"
-                      : !d.image_digest
-                        ? "This deployment has no immutable image"
-                        : "Deploy this exact image without rebuilding"
-                }
-                onClick={() => {
-                  if (
-                    confirm("Roll back to this deployment’s immutable image?")
-                  )
-                    void action.run(async () => {
-                      const next = await api<Deployment>(
-                        `/services/${s.id}/rollback`,
-                        { deployment_id: d.id },
-                      );
-                      setSelected(undefined);
-                      await refresh();
-                    }, "Rollback queued");
-                }}
-              >
-                Rollback
-              </button>
-            </div>
-          ))}
-          {!deployments.length && (
-            <div className="quiet-state">
-              <Rocket />
-              <p>No deployments yet</p>
-              <small>
-                Deploy latest builds your production branch and starts the
-                service.
-              </small>
+          {deployments.length > 0 && (
+            <div className="divide-y divide-border rounded-lg border border-border">
+              {deployments.map((d) => (
+                <div
+                  className="flex flex-wrap items-center gap-x-3 gap-y-2 p-3"
+                  key={d.id}
+                >
+                  <button
+                    type="button"
+                    aria-pressed={d.id === active}
+                    onClick={() => setSelected(d.id)}
+                    className="flex min-w-0 flex-1 items-center gap-3 rounded-md text-left outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary/40"
+                  >
+                    <StatusDot status={d.status} />
+                    <Meta className="text-foreground">
+                      {d.commit_sha?.slice(0, 8) ?? d.id.slice(0, 8)}
+                    </Meta>
+                    <Badge
+                      variant={statusVariant(d.status)}
+                      className="capitalize"
+                    >
+                      {d.status.replaceAll("_", " ")}
+                    </Badge>
+                    <Meta title={new Date(d.created_at).toLocaleString()}>
+                      {ago(d.created_at)}
+                    </Meta>
+                    {d.step && (
+                      <span className="hidden truncate text-sm text-muted-foreground sm:inline">
+                        {d.step.replaceAll("_", " ")}
+                      </span>
+                    )}
+                  </button>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={
+                      !live ||
+                      action.busy ||
+                      !d.image_digest ||
+                      deploying ||
+                      !["healthy", "rolled_back"].includes(d.status) ||
+                      d.id === s.current_deployment_id
+                    }
+                    title={
+                      deploying
+                        ? "Wait for the active deployment to finish"
+                        : !["healthy", "rolled_back"].includes(d.status)
+                          ? "Only a previously healthy deployment can be restored"
+                          : !d.image_digest
+                            ? "This deployment has no immutable image"
+                            : "Deploy this exact image without rebuilding"
+                    }
+                    onClick={() => {
+                      if (
+                        confirm(
+                          "Roll back to this deployment’s immutable image?",
+                        )
+                      )
+                        void action.run(async () => {
+                          await api<Deployment>(`/services/${s.id}/rollback`, {
+                            deployment_id: d.id,
+                          });
+                          setSelected(undefined);
+                          await refresh();
+                        }, "Rollback queued");
+                    }}
+                  >
+                    Rollback
+                  </Button>
+                </div>
+              ))}
             </div>
           )}
-          <details>
-            <summary>Deploy an existing image</summary>
+          {!deployments.length && (
+            <EmptyState
+              icon={<Rocket />}
+              title="No deployments yet"
+              description="Deploy latest builds your production branch and starts the service."
+              className="py-10"
+            />
+          )}
+          {readError && <Alert variant="destructive">{readError}</Alert>}
+          <details className="group">
+            <summary className={summaryClasses}>Deploy an existing image</summary>
             <form
+              className="mt-3 flex flex-col gap-4"
               onSubmit={(e) => {
                 e.preventDefault();
                 const form = new FormData(e.currentTarget);
                 void action.run(async () => {
-                  const d = await api<Deployment>(`/services/${s.id}/deploy`, {
+                  await api<Deployment>(`/services/${s.id}/deploy`, {
                     image: form.get("image"),
                   });
                   setSelected(undefined);
@@ -534,74 +754,46 @@ function ServiceDetail({
               }}
             >
               <Field label="Immutable image digest">
-                <input
+                <Input
                   name="image"
                   required
                   placeholder="registry/app@sha256:…"
                   pattern=".+@sha256:[a-fA-F0-9]{64}"
                 />
               </Field>
-              <Submit busy={action.busy || !live}>Deploy image</Submit>
+              <div>
+                <Submit busy={action.busy || !live}>Deploy image</Submit>
+              </div>
             </form>
           </details>
-        </>
-      )}
-      {tab === "Metrics" && (
-        <ServiceMetrics metrics={metrics} status={s.status} loading={loading} />
-      )}
-      {tab === "Logs" && (
-        <>
-          <div className="detail-heading">
-            <h3>Service logs</h3>
-            <small className="muted">Live runtime updates</small>
+        </TabsContent>
+        <TabsContent value="Logs" className="flex flex-col gap-4">
+          <ServiceMetrics metrics={metrics} loading={loading} />
+          {readError && <Alert variant="destructive">{readError}</Alert>}
+          <div className="flex items-center justify-between gap-3">
+            <span className="gh-eyebrow">Service logs</span>
+            <Meta>Live runtime updates</Meta>
           </div>
-          <pre className="log-output" aria-label="Service logs">
+          <pre className={logClasses} aria-label="Service logs">
             {lines.length
               ? lines.map(logText).join("\n")
               : loading
                 ? "Loading logs…"
                 : "No log lines available."}
           </pre>
-        </>
-      )}
-      {readError && tab !== "Configuration" && (
-        <div className="form-error" role="alert">
-          {readError}
-        </div>
-      )}
-      {tab === "Configuration" && (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            const form = new FormData(e.currentTarget);
-            void action.run(async () => {
-              await api(`/services/${s.id}`, serviceFields(form), "PUT");
-              await refresh();
-            }, "Configuration saved. Deploy to apply changes.");
-          }}
-        >
-          <ServiceFields data={data} service={s} />
-          <Submit busy={action.busy || !live}>Save configuration</Submit>
-          <div className="danger-zone">
-            <button
-              type="button"
-              className="text-button danger"
-              disabled={!live || action.busy}
-              onClick={() => {
-                if (confirm(`Stop and delete service ${s.name}?`))
-                  void action.run(async () => {
-                    await api(`/services/${s.id}`, undefined, "DELETE");
-                    await refresh();
-                    onRemove();
-                  }, "Service deleted");
-              }}
-            >
-              Delete service
-            </button>
-          </div>
-        </form>
-      )}
-    </div>
+          {Object.keys(metrics).length > 0 && (
+            <details>
+              <summary className={summaryClasses}>
+                Allocation resource details
+              </summary>
+              <pre className={cn(logClasses, "mt-3")}>
+                {JSON.stringify(metrics, null, 2)}
+              </pre>
+            </details>
+          )}
+        </TabsContent>
+      </Tabs>
+    </section>
   );
 }
 
@@ -616,7 +808,7 @@ function BuildProgress({ deployment }: { deployment: Deployment }) {
   return (
     <>
       {milestones.length ? (
-        <ol className="build-steps">
+        <ol className="flex flex-col gap-2">
           {milestones.map((step, index) => {
             const last = index === milestones.length - 1;
             const failed = last && deployment.status === "failed";
@@ -627,43 +819,48 @@ function BuildProgress({ deployment }: { deployment: Deployment }) {
             return (
               <li
                 key={step.step ?? index}
-                className={
-                  failed ? "failed" : running ? "running" : "completed"
-                }
+                className="flex items-start gap-3"
+                data-state={failed ? "failed" : running ? "running" : "done"}
               >
-                {failed ? (
-                  <span className="step-failed">!</span>
-                ) : running ? (
-                  <LoaderCircle className="spin" size={15} />
-                ) : (
-                  <Check size={15} />
-                )}
-                <div>
-                  {step.message ?? step.name ?? step.step}
-                  <small>
+                <StatusDot
+                  status={failed ? "failed" : running ? "running" : "done"}
+                  className="mt-1.5"
+                />
+                <div className="flex min-w-0 flex-col">
+                  <span
+                    className={cn(
+                      "text-sm",
+                      failed && "text-destructive",
+                      !failed && !running && "text-muted-foreground",
+                    )}
+                  >
+                    {step.message ?? step.name ?? step.step}
+                  </span>
+                  <Meta>
                     {failed ? "Failed" : running ? "In progress" : "Complete"}
-                  </small>
+                  </Meta>
                 </div>
               </li>
             );
           })}
         </ol>
       ) : (
-        <p className="form-note">
+        <Meta className="block">
           Waiting for build progress from the control plane.
-        </p>
+        </Meta>
       )}
       {deployment.error && (
-        <div className="form-error" role="alert">
-          {deployment.error}
-        </div>
+        <Alert variant="destructive">{deployment.error}</Alert>
       )}
       {logs.length > 0 || deployment.logs?.length ? (
-        <details className="build-log-details">
-          <summary>
+        <details>
+          <summary className={summaryClasses}>
             Build output · {logs.length + (deployment.logs?.length ?? 0)} lines
           </summary>
-          <pre className="log-output" aria-label="Deployment logs">
+          <pre
+            className={cn(logClasses, "mt-3")}
+            aria-label="Deployment logs"
+          >
             {[
               ...logs.map((step) => step.message ?? step.name ?? step.step),
               ...(deployment.logs ?? []).map(logText),
@@ -677,11 +874,9 @@ function BuildProgress({ deployment }: { deployment: Deployment }) {
 
 function ServiceMetrics({
   metrics,
-  status,
   loading,
 }: {
   metrics: Record<string, unknown>;
-  status?: string;
   loading: boolean;
 }) {
   const usage = metrics.ResourceUsage as
@@ -699,67 +894,61 @@ function ServiceMetrics({
       ? `${(value / 1024 ** 3).toFixed(2)} GB`
       : `${(value / 1024 ** 2).toFixed(1)} MB`;
   const network = usage?.NetworkStats;
+  const tiles: [string, string, string][] = [
+    [
+      "CPU",
+      !waiting && typeof cpu === "number" ? `${cpu.toFixed(1)}%` : "—",
+      waiting ? "Waiting for first measurement" : "CPU usage",
+    ],
+    [
+      "Memory",
+      !waiting && typeof memory === "number" ? bytes(memory) : "—",
+      waiting ? "Waiting for first measurement" : "Runtime memory usage",
+    ],
+    [
+      "Network",
+      !waiting &&
+      typeof network?.RxBytes === "number" &&
+      typeof network?.TxBytes === "number"
+        ? `${bytes(network.RxBytes)} / ${bytes(network.TxBytes)}`
+        : "—",
+      "Received / sent",
+    ],
+    [
+      "Restarts",
+      typeof metrics.restarts === "number" ? String(metrics.restarts) : "—",
+      "Current allocation",
+    ],
+  ];
   return (
-    <>
-      <div className="detail-heading">
-        <h3>Service health and resources</h3>
-        <span className={`status-pill ${status ?? "pending"}`}>
-          {status ?? "Not deployed"}
-        </span>
-      </div>
-      {waiting && (
-        <p className="form-note" role="status">
-          Waiting for first measurement
-        </p>
-      )}
-      <div className="metrics-grid">
-        {[
-          [
-            "CPU",
-            !waiting && typeof cpu === "number" ? `${cpu.toFixed(1)}%` : "—",
-            waiting ? "Waiting for first measurement" : "CPU usage",
-          ],
-          [
-            "Memory",
-            !waiting && typeof memory === "number" ? bytes(memory) : "—",
-            waiting ? "Waiting for first measurement" : "Runtime memory usage",
-          ],
-          [
-            "Network",
-            !waiting &&
-            typeof network?.RxBytes === "number" &&
-            typeof network?.TxBytes === "number"
-              ? `${bytes(network.RxBytes)} / ${bytes(network.TxBytes)}`
-              : "—",
-            "Received / sent · unavailable when not reported",
-          ],
-          [
-            "Restarts",
-            typeof metrics.restarts === "number"
-              ? String(metrics.restarts)
-              : "—",
-            "Current allocation",
-          ],
-        ].map(([label, value, detail]) => (
-          <div key={label} className="metric-card">
-            <span>{label}</span>
-            <strong>{value}</strong>
-            <small>{detail}</small>
+    <div className="flex flex-col gap-3">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        {tiles.map(([label, value, detail]) => (
+          <div
+            key={label}
+            className="gh-surface flex min-w-0 flex-col gap-1 rounded-lg p-3"
+          >
+            <span className="gh-eyebrow">{label}</span>
+            <span className="truncate text-lg font-semibold tracking-tight tabular-nums">
+              {value}
+            </span>
+            <Meta className="truncate">{detail}</Meta>
           </div>
         ))}
       </div>
-      {Object.keys(metrics).length ? (
-        <details>
-          <summary>Allocation resource details</summary>
-          <pre className="log-output">{JSON.stringify(metrics, null, 2)}</pre>
-        </details>
+      {waiting ? (
+        <Meta role="status" className="block">
+          Waiting for first measurement
+        </Meta>
       ) : (
-        <p className="form-note">
-          {loading
-            ? "Loading runtime metrics…"
-            : "No runtime metrics reported."}
-        </p>
+        !Object.keys(metrics).length && (
+          <Meta role="status" className="block">
+            {loading
+              ? "Loading runtime metrics…"
+              : "No runtime metrics reported."}
+          </Meta>
+        )
       )}
-    </>
+    </div>
   );
 }

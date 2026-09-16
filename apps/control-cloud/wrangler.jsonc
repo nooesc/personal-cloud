@@ -1,0 +1,63 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "personal-cloud-control",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-15",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1
+  },
+  "vars": {
+    "PUBLIC_URL": "http://localhost:4320",
+    "MAX_MACHINES_PER_WORKSPACE": "100",
+    "MAX_PROJECTS_PER_WORKSPACE": "100"
+  },
+  "d1_databases": [
+    {
+      "binding": "DIRECTORY",
+      "database_name": "personal-cloud-directory",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "WORKSPACES",
+        "class_name": "Workspace"
+      },
+      {
+        "name": "UPLOADS",
+        "class_name": "RegistryUpload"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "Workspace",
+        "RegistryUpload"
+      ]
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ARTIFACTS",
+      "bucket_name": "personal-cloud-artifacts"
+    }
+  ],
+  "rules": [
+    {
+      "type": "Text",
+      "globs": [
+        "**/*.sh"
+      ],
+      "fallthrough": true
+    }
+  ]
+}

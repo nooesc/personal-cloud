@@ -1,0 +1,9 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "personal-cloud-web",
+  "main": "src/cloudflare.ts",
+  "compatibility_date": "2026-09-16",
+  "compatibility_flags": ["nodejs_compat"],
+  "services": [{ "binding": "CONTROL_PLANE", "service": "personal-cloud-control" }],
+  "observability": { "enabled": true, "head_sampling_rate": 0.1 }
+}

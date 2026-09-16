@@ -1,8 +1,9 @@
+import { hosted, type HostedSession } from "../lib/hosted";
+import { WorkspacePicker } from "../components/workspaces";
 import { GitHubSignIn, githubMessages } from "../components/github";
 import { createFileRoute } from "@tanstack/react-router";
 import {
   useEffect,
-  useId,
   useRef,
   useState,
   type FormEvent,
@@ -14,37 +15,31 @@ import {
   ArrowUpRight,
   Box,
   Check,
-  CheckCheck,
-  ChevronDown,
   ChevronRight,
+  ChevronsUpDown,
   CircleHelp,
   Cloud,
-  Code2,
   Copy,
   Cpu,
   Database,
-  GitBranch,
   GitFork,
   Globe2,
   HardDrive,
   Layers3,
   LayoutDashboard,
-  LoaderCircle,
   LockKeyhole,
+  LogOut,
   Menu,
   MemoryStick,
-  Monitor,
-  MoreHorizontal,
-  Network,
   Plus,
   Search,
   Server,
   Settings2,
-  Terminal,
   X,
 } from "lucide-react";
 import {
   api,
+  ApiError,
   demo,
   empty,
   size,
@@ -52,6 +47,7 @@ import {
   type Machine,
   type Project,
 } from "../lib/data";
+import { cn } from "../lib/utils";
 import {
   Setup,
   RepositoryField,
@@ -61,6 +57,38 @@ import {
 } from "../components/live";
 import { ProjectDetail } from "../components/project";
 import { Databases, Domains } from "../components/resources";
+import {
+  FleetPanel,
+  MachineDetailBody,
+  useFleetHistory,
+} from "../components/fleet";
+import { Button } from "../components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "../components/ui/card";
+import { Badge } from "../components/ui/badge";
+import {
+  Checkbox,
+  Input,
+  Label,
+  Select,
+  Textarea,
+  fieldClasses,
+} from "../components/ui/input";
+import { Dialog, DialogFooter } from "../components/ui/dialog";
+import {
+  Alert,
+  EmptyState,
+  Eyebrow,
+  Meta,
+  StatusDot,
+  statusDot,
+} from "../components/ui/misc";
+import { DitherAvatar, DitherGradient } from "../components/dither-kit";
 export const Route = createFileRoute("/")({ component: App });
 type Page =
   | "Overview"
@@ -78,11 +106,26 @@ const nav = [
   { label: "Databases", icon: Database },
   { label: "Domains", icon: Globe2 },
 ] as const;
+const system = [
+  { label: "Activity", icon: Activity },
+  { label: "Settings", icon: Settings2 },
+] as const;
+const descriptions: Record<Page, string> = {
+  Overview: "Home hardware and cloud machines, one place to make things run.",
+  Projects: "Your applications and the services that bring them to life.",
+  Machines: "Every machine has a place in your cloud.",
+  Databases: "Simple, dependable building blocks for your projects.",
+  Domains: "Simple, dependable building blocks for your projects.",
+  Activity: "A record of what is happening across your cloud.",
+  Settings: "The connections and tools behind your workspace.",
+};
+const VERSION = "v0.3.0";
 function App() {
+  const [session, setSession] = useState<HostedSession | null>(null);
   const [mode, setMode] = useState<"demo" | "live">("live"),
     [page, setPage] = useState<Page>("Overview"),
     [data, setData] = useState<Snapshot>(empty),
-    [modal, setModal] = useState<Modal>(null),
+    [modal, setModal] = useState<Modal>(hosted ? "login" : null),
     [selected, setSelected] = useState<Project | null>(null),
     [machineDetail, setMachineDetail] = useState<Machine | null>(null),
     [search, setSearch] = useState(""),
@@ -93,6 +136,7 @@ function App() {
     [busy, setBusy] = useState(false),
     [stream, setStream] = useState("Connecting"),
     [menu, setMenu] = useState(false),
+    [userMenu, setUserMenu] = useState(false),
     [enrollment, setEnrollment] = useState<{
       token: string;
       expires_at: string;
@@ -100,6 +144,7 @@ function App() {
     } | null>(null);
   const [routeReady, setRouteReady] = useState(false),
     [pendingProject, setPendingProject] = useState<string | null>(null);
+  const userMenuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const params = new URLSearchParams(location.hash.slice(1));
     const savedPage = params.get("page");
@@ -158,11 +203,32 @@ function App() {
     let cancelled = false,
       ws: WebSocket | undefined,
       retry: ReturnType<typeof setTimeout>;
+    let fetchingUpdate = false, updatePending = false;
+    const refreshFromEvent = async () => {
+      updatePending = true;
+      if (fetchingUpdate) return;
+      fetchingUpdate = true;
+      try {
+        while (updatePending && !cancelled) {
+          updatePending = false;
+          const next = await api<Snapshot>("/snapshot");
+          if (!cancelled) { setData(next); setStream("Live updates"); }
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setStream("Update unavailable");
+          if (e instanceof ApiError && e.status === 401) { setData(empty); setModal("login"); }
+        }
+      } finally { fetchingUpdate = false; }
+    };
     const connect = async () => {
       try {
+        const activeSession = hosted ? await api<HostedSession>("/session") : null;
         const next = await api<Snapshot>("/snapshot");
         if (cancelled) return;
+        setSession(activeSession);
         setData(next);
+        if (hosted) setModal(current => current === "login" ? null : current);
         setError("");
         setStream("Connecting");
         ws = new WebSocket(
@@ -174,8 +240,12 @@ function App() {
         ws.onmessage = (e) => {
           if (cancelled) return;
           try {
-            setData(JSON.parse(e.data));
-            setStream("Live updates");
+            const message = JSON.parse(e.data);
+            if (hosted && message.type === "changed") void refreshFromEvent();
+            else if (Array.isArray(message.machines)) {
+              setData(message);
+              setStream("Live updates");
+            }
           } catch {
             setStream("Update unavailable");
           }
@@ -191,9 +261,10 @@ function App() {
         };
       } catch (e) {
         if (cancelled) return;
-        setError((e as Error).message);
         setStream("Disconnected");
-        if ((e as { status?: number }).status === 401) setModal("login");
+        // No session yet is the sign-in state, not a failure worth an alert.
+        if (e instanceof ApiError && e.status === 401) setModal("login");
+        else setError((e as Error).message);
         retry = setTimeout(connect, 5000);
       }
     };
@@ -209,6 +280,28 @@ function App() {
     const timeout = setTimeout(() => setNotice(""), 4000);
     return () => clearTimeout(timeout);
   }, [notice]);
+  useEffect(() => {
+    if (!userMenu) return;
+    const onDown = (e: PointerEvent) => {
+      if (!userMenuRef.current?.contains(e.target as Node)) setUserMenu(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setUserMenu(false);
+    };
+    document.addEventListener("pointerdown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [userMenu]);
+  const signedIn = Boolean(data.generated_at);
+  // Live but signed out: don't poll (401) and don't synthesize demo curves.
+  const fleetHistory = useFleetHistory(
+    mode === "live",
+    data.machines,
+    mode !== "live" || signedIn,
+  );
   function open(value: Modal) {
     setError("");
     setEnrollment(null);
@@ -226,6 +319,7 @@ function App() {
   async function signOut() {
     try {
       await api("/session", undefined, "DELETE");
+      if (hosted) { window.history.replaceState(null, "", "/"); window.location.reload(); return; }
       setData(empty);
       setSelected(null);
       setModal("login");
@@ -240,6 +334,12 @@ function App() {
     } else {
       setPage("Settings");
     }
+  }
+  function go(next: Page) {
+    setPage(next);
+    setSelected(null);
+    setMachineDetail(null);
+    setMenu(false);
   }
   const machines = data.machines.filter((m) =>
     `${m.report.hostname} ${m.location} ${m.roles.join(" ")} ${m.tags.join(" ")}`
@@ -350,558 +450,659 @@ function App() {
       setError("Clipboard unavailable. Select and copy the text.");
     }
   }
-  const headline =
-    page === "Overview"
-      ? "Your cloud, together."
-      : page === "Settings"
-        ? "Make yourself at home."
-        : page;
+  const live = mode === "live";
+  const installCommand = enrollment
+    ? `curl -fsSL '${location.origin}/install.sh' | sudo env PC_API='${location.origin}' PC_ENROLL_TOKEN='${enrollment.token}'${enrollment.endpoint ? ` PC_WIREGUARD_ENDPOINT='${enrollment.endpoint}'` : ""} sh`
+    : "";
+  const brand = (
+    <a
+      href="/"
+      aria-label="Personal Cloud home"
+      className="flex min-w-0 items-center gap-2.5 text-sm font-semibold tracking-tight text-foreground"
+    >
+      <span className="grid size-8 shrink-0 place-items-center rounded-md bg-primary/15 text-primary">
+        <Cloud className="size-4" />
+      </span>
+      <span className="truncate">Personal Cloud</span>
+      <Badge
+        variant="blank"
+        className="h-4 px-1 text-[9px] tracking-[0.08em] text-muted-foreground"
+      >
+        ALPHA
+      </Badge>
+    </a>
+  );
+  const toasts = (githubNotice || notice) && (
+    <div className="pointer-events-none fixed inset-x-4 bottom-4 z-50 flex flex-col items-stretch gap-2 sm:left-auto sm:right-4 sm:w-auto sm:max-w-sm sm:items-end">
+      {githubNotice && (
+        <div
+          data-slot="toast"
+          role="status"
+          className="pointer-events-auto flex items-center gap-2 px-3 py-2 text-sm"
+        >
+          <span className="flex-1">{githubNotice}</span>
+          <Button
+            size="xs"
+            variant="ghost"
+            aria-label="Dismiss GitHub message"
+            onClick={() => setGithubNotice("")}
+          >
+            Dismiss
+          </Button>
+        </div>
+      )}
+      {notice && (
+        <div
+          data-slot="toast"
+          role="status"
+          className="pointer-events-auto flex items-center gap-2 px-3 py-2 text-sm"
+        >
+          <Check data-icon className="size-4" />
+          {notice}
+        </div>
+      )}
+    </div>
+  );
+  const loginFields = (
+    <>
+      <GitHubSignIn />
+      {!hosted && <>
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="owner-token">Owner token</Label>
+        <Input
+          id="owner-token"
+          autoFocus
+          name="token"
+          type="password"
+          autoComplete="off"
+          required
+          minLength={32}
+          placeholder="PC_ADMIN_TOKEN"
+        />
+      </div>
+      <Alert className="text-muted-foreground">
+        <LockKeyhole />
+        Your token is sent only to this workspace. The session uses a protected
+        cookie.
+      </Alert>
+      </>}
+    </>
+  );
+  if (live && modal === "login" && !signedIn) {
+    return (
+      <div className="grid min-h-screen lg:grid-cols-2">
+        <div className="relative hidden flex-col justify-between overflow-hidden border-r border-border bg-sidebar p-10 lg:flex">
+          <div className="relative z-10 text-base">{brand}</div>
+          <div className="relative z-10 flex flex-col items-center gap-6 text-center">
+            <p className="text-lg text-muted-foreground">
+              Your hardware. Your cloud.
+            </p>
+          </div>
+          <div aria-hidden className="absolute inset-x-0 bottom-0 h-40">
+            <DitherGradient
+              from="green"
+              to="transparent"
+              direction="up"
+              opacity={0.35}
+            />
+          </div>
+          <Meta className="relative z-10 text-foreground/70">
+            Personal Cloud · {VERSION}
+          </Meta>
+        </div>
+        <div className="flex flex-col items-center justify-center px-4 py-10">
+          <div className="flex w-full max-w-sm flex-col gap-6">
+            <div className="lg:hidden">{brand}</div>
+            <div className="flex flex-col gap-1">
+              <h1 className="text-xl font-semibold tracking-tight">
+                Connect your cloud
+              </h1>
+              <p className="text-sm text-muted-foreground">
+                Sign in to the control plane that runs your machines and
+                projects.
+              </p>
+            </div>
+            <form onSubmit={submit} className="flex flex-col gap-4">
+              {loginFields}
+              {error && <Alert variant="destructive">{error}</Alert>}
+              {!hosted && <Button type="submit" className="w-full" isLoading={busy}>
+                {!busy && <LockKeyhole />}
+                {busy ? "Working…" : "Connect workspace"}
+              </Button>}
+              <Button
+                type="button"
+                variant="link"
+                size="sm"
+                onClick={exploreDemo}
+              >
+                Explore sample workspace
+              </Button>
+            </form>
+          </div>
+        </div>
+        {toasts}
+      </div>
+    );
+  }
+  const navButton = (
+    label: Page,
+    Icon: typeof LayoutDashboard,
+    count?: number,
+  ) => {
+    const active = page === label;
+    return (
+      <button
+        key={label}
+        type="button"
+        data-slot="sidebar-menu-button"
+        data-active={active}
+        aria-current={active ? "page" : undefined}
+        onClick={() => go(label)}
+        className={cn(
+          "flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
+          active
+            ? "bg-sidebar-accent text-sidebar-accent-foreground"
+            : "hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
+        )}
+      >
+        <Icon className={cn("size-4", active && "text-primary")} />
+        <span className="flex-1 truncate">{label}</span>
+        {count !== undefined && <Meta>{count}</Meta>}
+      </button>
+    );
+  };
   return (
-    <div className="app-shell">
+    <div className="flex min-h-screen">
+      {menu && (
+        <div
+          aria-hidden
+          className="fixed inset-0 z-30 bg-black/40 backdrop-blur-[2px] lg:hidden"
+          onClick={() => setMenu(false)}
+        />
+      )}
       <aside
         id="workspace-navigation"
-        className={`sidebar ${menu ? "is-open" : ""}`}
+        data-slot="sidebar-inner"
+        className={cn(
+          "fixed inset-y-0 left-0 z-40 flex w-[19.5rem] max-w-[85vw] flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-transform duration-200 lg:sticky lg:top-0 lg:h-screen lg:shrink-0 lg:translate-x-0",
+          menu ? "translate-x-0" : "-translate-x-full",
+        )}
       >
-        <a className="brand" href="/" aria-label="Personal Cloud home">
-          <span className="brand-mark">
-            <Cloud size={23} />
-          </span>
-          <span>
-            personal<span className="brand-light">cloud</span>
-            <span className="brand-alpha">ALPHA</span>
-          </span>
-        </a>
-        <button className="workspace" onClick={switchMode}>
-          <span className="workspace-avatar">P</span>
-          <span>
-            Personal workspace
-            <small>
-              {mode === "demo" ? "Explore the demo" : "Local control plane"}
-            </small>
-          </span>
-          <ChevronDown size={14} />
-        </button>
-        <div className="nav-label">WORKSPACE</div>
-        <nav aria-label="Main navigation">
-          {nav.map(({ label, icon: Icon }) => (
-            <button
-              key={label}
-              className={`nav-item ${page === label ? "active" : ""}`}
-              onClick={() => {
-                setPage(label);
-                setSelected(null);
-                setMachineDetail(null);
-                setMenu(false);
-              }}
-            >
-              <Icon size={17} />
-              {label}
-              {label === "Machines" && (
-                <span className="nav-count">{data.machines.length}</span>
-              )}
-              {label === "Projects" && (
-                <span className="nav-count">{data.projects.length}</span>
-              )}
-            </button>
-          ))}
-          <div className="nav-divider" />
-          <button
-            className={`nav-item ${page === "Activity" ? "active" : ""}`}
-            onClick={() => {
-              setPage("Activity");
-              setMenu(false);
-            }}
+        <div className="flex h-12 shrink-0 items-center justify-between gap-2 px-4">
+          {brand}
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className="text-muted-foreground lg:hidden"
+            aria-label="Close navigation"
+            onClick={() => setMenu(false)}
           >
-            <Activity size={17} />
-            Activity
-          </button>
-          <button
-            className={`nav-item ${page === "Settings" ? "active" : ""}`}
-            onClick={() => {
-              setPage("Settings");
-              setMenu(false);
-            }}
-          >
-            <Settings2 size={17} />
-            Settings
-          </button>
-        </nav>
-        <div className="sidebar-bottom">
-          <div className="owned-note">
-            <Network size={19} />
-            <strong>
-              Your hardware.
-              <br />
-              Your little corner of the cloud.
-            </strong>
-            <p>Open source. Yours to run.</p>
-            <a
-              href="https://github.com/nooesc/personal-cloud"
-              target="_blank"
-              rel="noreferrer"
+            <X />
+          </Button>
+        </div>
+        <nav
+          aria-label="Main navigation"
+          className="flex flex-1 flex-col gap-4 overflow-y-auto px-3 py-2"
+        >
+          <div className="flex flex-col gap-0.5">
+            <div
+              data-slot="sidebar-group-label"
+              className="gh-eyebrow flex h-8 items-center px-2"
             >
-              View on GitHub <ArrowUpRight size={13} />
-            </a>
+              Workspace
+            </div>
+            {nav.map(({ label, icon }) =>
+              navButton(
+                label,
+                icon,
+                label === "Machines"
+                  ? data.machines.length
+                  : label === "Projects"
+                    ? data.projects.length
+                    : undefined,
+              ),
+            )}
           </div>
-          <button className="profile" onClick={switchMode}>
-            <span className="profile-avatar">P</span>
-            <span>
-              Personal cloud
-              <small>
-                {mode === "demo" ? "Demo workspace" : "Owner workspace"}
-              </small>
+          <div className="flex flex-col gap-0.5">
+            <div
+              data-slot="sidebar-group-label"
+              className="gh-eyebrow flex h-8 items-center px-2"
+            >
+              System
+            </div>
+            {system.map(({ label, icon }) => navButton(label, icon))}
+          </div>
+        </nav>
+        <div className="relative border-t border-sidebar-border p-3" ref={userMenuRef}>
+          {userMenu && (
+            <div
+              role="menu"
+              aria-label="Workspace menu"
+              className="gh-surface absolute inset-x-3 bottom-full z-50 mb-1 flex flex-col gap-0.5 rounded-lg p-1 text-sm text-foreground"
+            >
+              <span className="gh-eyebrow px-2 py-1.5">Workspace</span>
+              {hosted && session && <WorkspacePicker session={session} />}
+              <button
+                type="button"
+                role="menuitem"
+                className="gh-interactive flex h-8 items-center gap-2 rounded-md px-2 text-left"
+                onClick={() => {
+                  setUserMenu(false);
+                  if (mode === "demo") open("login");
+                  else exploreDemo();
+                }}
+              >
+                {mode === "demo" ? (
+                  <LockKeyhole className="size-4 text-muted-foreground" />
+                ) : (
+                  <Box className="size-4 text-muted-foreground" />
+                )}
+                {mode === "demo" ? "Connect workspace" : "Switch to demo"}
+              </button>
+              {live && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="gh-interactive flex h-8 items-center gap-2 rounded-md px-2 text-left"
+                  onClick={() => {
+                    setUserMenu(false);
+                    void signOut();
+                  }}
+                >
+                  <LogOut className="size-4 text-muted-foreground" />
+                  Sign out
+                </button>
+              )}
+              <a
+                role="menuitem"
+                href="https://github.com/nooesc/personal-cloud"
+                target="_blank"
+                rel="noreferrer"
+                className="gh-interactive flex h-8 items-center gap-2 rounded-md px-2"
+              >
+                <ArrowUpRight className="size-4 text-muted-foreground" />
+                View on GitHub
+              </a>
+            </div>
+          )}
+          <button
+            type="button"
+            data-slot="sidebar-menu-button"
+            data-active={userMenu}
+            aria-haspopup="menu"
+            aria-expanded={userMenu}
+            onClick={() => setUserMenu((v) => !v)}
+            className="flex w-full items-center gap-3 rounded-md p-2 text-left outline-none hover:bg-sidebar-accent/60 focus-visible:ring-2 focus-visible:ring-primary/40"
+          >
+            <DitherAvatar
+              name="Personal Cloud"
+              animate={false}
+              className="size-8 shrink-0 rounded-md ring-1 ring-border"
+            />
+            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <span className="truncate text-sm font-medium text-foreground">
+                Personal Cloud
+              </span>
+              <Meta className="truncate">
+                {mode === "demo" ? "Demo workspace" : session?.workspace.name ?? (hosted ? "Your workspace" : "Owner workspace")}
+              </Meta>
             </span>
-            <MoreHorizontal size={18} />
+            <ChevronsUpDown className="size-4 shrink-0 text-muted-foreground" />
           </button>
         </div>
       </aside>
-      <div className="main-wrap">
-        <header className="topbar">
-          <button
-            className="icon-button mobile-menu"
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="sticky top-0 z-20 flex h-12 shrink-0 items-center gap-3 border-b border-border bg-background px-4 sm:px-6">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="-ml-2 text-muted-foreground lg:hidden"
             aria-label="Toggle navigation"
             aria-controls="workspace-navigation"
             aria-expanded={menu}
             onClick={() => setMenu(!menu)}
           >
-            <Menu size={19} />
-          </button>
-          <div className="breadcrumbs">
-            <Cloud size={15} />
-            <span>My cloud</span>
-            <ChevronRight size={12} />
-            <strong>{page}</strong>
-          </div>
-          <div className="top-actions">
-            <label className="search">
-              <Search size={15} />
-              <input
+            <Menu />
+          </Button>
+          <nav
+            aria-label="Breadcrumb"
+            className="flex min-w-0 items-center gap-1.5"
+          >
+            <Meta className="hidden sm:inline">My cloud</Meta>
+            <ChevronRight className="hidden size-3 text-muted-foreground sm:inline" />
+            <span className="truncate text-sm font-medium">{page}</span>
+          </nav>
+          <div className="ml-auto flex items-center gap-2">
+            <div className="relative hidden w-full max-w-xs sm:block">
+              <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
                 aria-label="Search machines and projects"
                 placeholder="Find a project or machine…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
+                className="h-8 pl-8"
               />
-            </label>
-            <button className={`mode-badge ${mode}`} onClick={switchMode}>
-              <span className="dot" />
-              {mode === "demo" ? "Demo workspace" : "Live workspace"}
-              <ChevronDown size={12} />
-            </button>
+            </div>
             <button
-              className="icon-button"
+              type="button"
+              onClick={switchMode}
+              aria-label={
+                mode === "demo"
+                  ? "Demo workspace. Connect your cloud"
+                  : "Live workspace. Open settings"
+              }
+              className="rounded-md outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+            >
+              <Badge
+                variant={
+                  mode === "demo"
+                    ? "blank"
+                    : stream === "Live updates"
+                      ? "green"
+                      : "yellow"
+                }
+                className="h-6 px-2"
+              >
+                <StatusDot
+                  status={
+                    mode === "demo"
+                      ? "idle"
+                      : stream === "Live updates"
+                        ? "online"
+                        : "degraded"
+                  }
+                  className="size-1.5"
+                />
+                {mode === "demo"
+                  ? "Demo workspace"
+                  : stream === "Live updates"
+                    ? "Live workspace"
+                    : stream}
+              </Badge>
+            </button>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground"
               aria-label="Open setup information"
               onClick={() => setPage("Settings")}
             >
-              <CircleHelp size={18} />
-            </button>
+              <CircleHelp />
+            </Button>
           </div>
         </header>
-        <main>
+        <main className="flex min-w-0 flex-1 flex-col gap-6 p-4 sm:p-6 lg:p-8">
           {mode === "demo" && (
-            <div className="demo-banner">
-              <span>
-                <Box size={14} /> A little cloud to explore. Everything here is
-                sample data.
+            <Alert className="flex flex-wrap items-center gap-x-3 gap-y-2">
+              <Box className="text-muted-foreground" />
+              <span className="min-w-40 flex-1">
+                A little cloud to explore. Everything here is sample data.
               </span>
-              <button onClick={() => open("login")}>
-                Connect your cloud <ArrowRight size={14} />
-              </button>
-            </div>
+              <Button size="xs" variant="outline" onClick={() => open("login")}>
+                Connect your cloud <ArrowRight />
+              </Button>
+            </Alert>
           )}
-          <section className="page-heading">
-            <div>
-              <div className="eyebrow">
-                {page === "Overview"
-                  ? "A PLACE FOR EVERYTHING YOU BUILD"
-                  : "PERSONAL CLOUD"}
-              </div>
-              <h1>{headline}</h1>
-              <p>
-                {page === "Overview"
-                  ? "Home hardware and cloud machines. One place to make things run."
-                  : page === "Projects"
-                    ? "Your applications, and the services that bring them to life."
-                    : page === "Machines"
-                      ? "Every machine has a place in your cloud."
-                      : page === "Settings"
-                        ? "The connections and tools behind your workspace."
-                        : page === "Activity"
-                          ? "A record of what is happening across your cloud."
-                          : "Simple, dependable building blocks for your projects."}
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex flex-col gap-1">
+              <h1 className="text-xl font-semibold tracking-tight">{page}</h1>
+              <p className="text-sm text-muted-foreground">
+                {descriptions[page]}
               </p>
             </div>
-            <div className="heading-actions">
+            <div className="flex flex-wrap gap-2">
               {(page === "Overview" || page === "Machines") && (
-                <button
-                  className="button secondary"
+                <Button
+                  size="sm"
+                  variant="outline"
                   onClick={() => open("machine")}
                 >
-                  <Plus size={16} />
+                  <Plus />
                   Add machine
-                </button>
+                </Button>
               )}
               {(page === "Overview" || page === "Projects") && (
-                <button
-                  className="button primary"
-                  onClick={() => open("project")}
-                >
-                  <Plus size={16} />
+                <Button size="sm" onClick={() => open("project")}>
+                  <Plus />
                   New project
-                </button>
+                </Button>
               )}
             </div>
-          </section>
-          {mode === "live" &&
+          </div>
+          {live &&
             ["Reconnecting", "Disconnected", "Update unavailable"].includes(
               stream,
             ) &&
             data.generated_at && (
-              <div className="alert" role="status">
+              <Alert>
                 Live updates interrupted. Showing the last snapshot from{" "}
                 {new Date(data.generated_at).toLocaleTimeString()}.
-              </div>
+              </Alert>
             )}
           {error && !modal && (
-            <div className="alert" role="alert">
-              {error}
-              <button onClick={() => open("login")}>Sign in</button>
-            </div>
+            <Alert
+              variant="destructive"
+              className="flex flex-wrap items-center gap-x-3 gap-y-2"
+            >
+              <span className="min-w-40 flex-1">{error}</span>
+              <Button size="xs" variant="outline" onClick={() => open("login")}>
+                Sign in
+              </Button>
+            </Alert>
           )}
           {page === "Overview" && (
             <>
-              {mode === "live" &&
+              {live &&
                 !data.services.some((s) => s.status === "healthy") && (
-                  <section className="panel welcome-panel">
-                    <div>
-                      <span className="eyebrow">
-                        LET’S GET YOUR CLOUD RUNNING
-                      </span>
-                      <h2>
+                  <Card className="flex-col gap-4 p-6 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex flex-col gap-1.5">
+                      <Eyebrow>Let’s get your cloud running</Eyebrow>
+                      <span className="text-[15px] font-medium">
                         {data.machines.length
                           ? "Your fleet is here. Give it something to run."
                           : "Start with the things you already own."}
-                      </h2>
-                      <p>
-                        Connect GitHub and Cloudflare, add a Linux machine, then
+                      </span>
+                      <p className="text-sm text-muted-foreground">
+                        {hosted ? "Choose your repositories, add a Linux machine, then" : "Connect GitHub and Cloudflare, add a Linux machine, then"}{" "}
                         deploy your first application.
                       </p>
                     </div>
-                    <button
-                      className="button primary"
+                    <Button
+                      size="sm"
+                      className="shrink-0"
                       onClick={() => setPage("Settings")}
                     >
-                      Set up your cloud <ArrowRight size={15} />
-                    </button>
-                  </section>
+                      Set up your cloud <ArrowRight />
+                    </Button>
+                  </Card>
                 )}
-              <div className="stats">
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                 <Stat
                   label="Machines"
                   value={String(data.machines.length)}
                   detail={`${online} online${data.machines.length - online ? ` · ${data.machines.length - online} need attention` : ""}`}
-                  icon={<Server size={17} />}
+                  icon={<Server />}
                 />
                 <Stat
                   label="Compute"
                   value={String(totals.cpu)}
                   unit="cores"
                   detail="Across your whole fleet"
-                  icon={<Cpu size={17} />}
+                  icon={<Cpu />}
                 />
                 <Stat
                   label="Memory"
                   value={size(totals.ram).split(" ")[0]}
                   unit={size(totals.ram).split(" ")[1]}
                   detail="Room for your next idea"
-                  icon={<MemoryStick size={17} />}
+                  icon={<MemoryStick />}
                 />
                 <Stat
                   label="Storage"
                   value={size(totals.disk).split(" ")[0]}
                   unit={size(totals.disk).split(" ")[1]}
                   detail="Capacity on connected machines"
-                  icon={<HardDrive size={17} />}
+                  icon={<HardDrive />}
                 />
               </div>
-              <section className="panel fleet-panel">
-                <div className="section-heading">
-                  <div>
-                    <h2>
-                      Your fleet{" "}
-                      <span className="count">{data.machines.length}</span>
-                    </h2>
-                    <p>A bird’s-eye view of where it all runs.</p>
-                  </div>
-                  <span className="subtle-status">
-                    <span
-                      className={`dot ${stream === "Live updates" ? "green" : ""}`}
-                    />
-                    {stream}
-                  </span>
-                </div>
-                {machines.length ? (
-                  <>
-                    <div className="fleet-topology">
-                      <div className="cloud-node">
-                        <Cloud size={22} />
-                        <div>
-                          Your cloud
-                          <small>
-                            {mode === "demo"
-                              ? "Sample fleet topology"
-                              : "Fleet inventory"}
-                          </small>
-                        </div>
-                        <span className="node-orbit" />
-                      </div>
-                      <div className="topology-line" />
-                      <span className="network-caption">
-                        <LockKeyhole size={10} />
-                        {mode === "demo"
-                          ? "PRIVATE NETWORK · PREVIEW"
-                          : data.machines.some((m) => m.report.private_ip)
-                            ? "PRIVATE FLEET NETWORK"
-                            : "NETWORK · AWAITING MACHINE SETUP"}
-                      </span>
+              <FleetPanel
+                machines={machines}
+                services={data.services}
+                live={live}
+                stream={stream}
+                onSelect={setMachineDetail}
+                onAdd={() => open("machine")}
+                search={search}
+                history={fleetHistory}
+              />
+              <div className="grid gap-6 lg:grid-cols-[3fr_2fr]">
+                <Card>
+                  <CardHeader className="flex flex-row items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <CardTitle className="text-[15px]">Projects</CardTitle>
+                      <Meta>{data.projects.length}</Meta>
                     </div>
-                    <div className="machine-grid">
-                      {machines.map((m) => (
-                        <MachineCard
-                          key={m.id}
-                          machine={m}
-                          count={
-                            data.services.filter(
-                              (s) => (s.machine_id ?? s.demo_machine) === m.id,
-                            ).length
-                          }
-                          onClick={() => setMachineDetail(m)}
-                        />
-                      ))}
-                    </div>
-                  </>
-                ) : (
-                  <Empty
-                    icon={<Server />}
-                    title={
-                      search
-                        ? "No matching machines"
-                        : "Your cloud starts with a machine"
-                    }
-                    description={
-                      search
-                        ? "Try a different hostname or tag."
-                        : "Bring a home computer, a VPS, or both. Add your first machine to see its resources here."
-                    }
-                    action={
-                      !search && (
-                        <button
-                          className="button secondary"
-                          onClick={() => open("machine")}
-                        >
-                          <Plus size={15} />
-                          Add your first machine
-                        </button>
-                      )
-                    }
-                  />
-                )}
-                <div className="panel-footer">
-                  <span>
-                    <span className="dot green" />
-                    {mode === "demo"
-                      ? "Sample fleet · no infrastructure connected"
-                      : `${data.machines.length} enrolled machines · updated every 10 seconds`}
-                  </span>
-                  <button onClick={() => setPage("Machines")}>
-                    Manage machines <ArrowRight size={14} />
-                  </button>
-                </div>
-              </section>
-              <div className="lower-grid">
-                <section className="panel">
-                  <div className="section-heading">
-                    <h2>
-                      Projects{" "}
-                      <span className="count">{data.projects.length}</span>
-                    </h2>
-                    <button
-                      className="text-button"
+                    <Button
+                      variant="ghost"
+                      size="xs"
                       onClick={() => setPage("Projects")}
                     >
-                      View all <ArrowRight size={13} />
-                    </button>
-                  </div>
-                  <ProjectList
-                    projects={projects}
-                    data={data}
-                    onSelect={setSelected}
-                  />
-                  {!projects.length && (
-                    <Empty
-                      icon={<Layers3 />}
-                      title={
-                        search
-                          ? "No matching projects"
-                          : "Something great starts here"
-                      }
-                      description="Add a GitHub repository to organize your first application."
-                      action={
-                        <button
-                          className="button secondary"
-                          onClick={() => open("project")}
-                        >
-                          Create project
-                        </button>
-                      }
+                      View all <ArrowRight />
+                    </Button>
+                  </CardHeader>
+                  <CardContent className="flex flex-col gap-1 px-3 pb-3">
+                    <ProjectList
+                      projects={projects}
+                      data={data}
+                      onSelect={setSelected}
                     />
-                  )}
-                </section>
-                <section className="panel">
-                  <div className="section-heading">
-                    <h2>Recent activity</h2>
-                    <Activity size={16} className="muted" />
-                  </div>
-                  <ActivityList data={data} demoMode={mode === "demo"} />
-                  <div className="panel-footer">
-                    <button onClick={() => setPage("Activity")}>
-                      All activity <ArrowRight size={13} />
-                    </button>
-                  </div>
-                </section>
+                    {!projects.length && (
+                      <EmptyState
+                        icon={<Layers3 />}
+                        title={
+                          search
+                            ? "No matching projects"
+                            : "Something great starts here"
+                        }
+                        description="Add a GitHub repository to organize your first application."
+                        action={
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => open("project")}
+                          >
+                            Create project
+                          </Button>
+                        }
+                      />
+                    )}
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardHeader className="flex flex-row items-center justify-between gap-3">
+                    <CardTitle className="text-[15px]">Recent activity</CardTitle>
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      onClick={() => setPage("Activity")}
+                    >
+                      All activity <ArrowRight />
+                    </Button>
+                  </CardHeader>
+                  <CardContent className="px-3 pb-3">
+                    <ActivityList data={data} demoMode={mode === "demo"} />
+                  </CardContent>
+                </Card>
               </div>
             </>
           )}
           {page === "Projects" && (
-            <section className="panel">
-              <div className="section-heading">
-                <h2>
-                  All projects <span className="count">{projects.length}</span>
-                </h2>
-                <span className="muted">GitHub repositories</span>
-              </div>
-              <ProjectList
-                projects={projects}
-                data={data}
-                onSelect={setSelected}
-              />
-              {!projects.length && (
-                <Empty
-                  icon={<Layers3 />}
-                  title="A home for your next project"
-                  description="Start with a repository. Add its services and choose where they should run."
-                  action={
-                    <button
-                      className="button primary"
-                      onClick={() => open("project")}
-                    >
-                      New project
-                    </button>
-                  }
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <CardTitle className="text-[15px]">All projects</CardTitle>
+                  <Meta>{projects.length}</Meta>
+                </div>
+                <Meta>GitHub repositories</Meta>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-1 px-3 pb-3">
+                <ProjectList
+                  projects={projects}
+                  data={data}
+                  onSelect={setSelected}
                 />
-              )}
-            </section>
+                {!projects.length && (
+                  <EmptyState
+                    icon={<Layers3 />}
+                    title="A home for your next project"
+                    description="Start with a repository. Add its services and choose where they should run."
+                    action={
+                      <Button size="sm" onClick={() => open("project")}>
+                        New project
+                      </Button>
+                    }
+                  />
+                )}
+              </CardContent>
+            </Card>
           )}
           {page === "Machines" && (
-            <section className="panel">
-              <div className="section-heading">
-                <h2>Connected machines</h2>
-                <span className="subtle-status">{stream}</span>
-              </div>
-              <div className="machine-grid machines-page">
-                {machines.map((m) => (
-                  <MachineCard
-                    key={m.id}
-                    machine={m}
-                    count={
-                      data.services.filter(
-                        (s) => (s.machine_id ?? s.demo_machine) === m.id,
-                      ).length
-                    }
-                    onClick={() => setMachineDetail(m)}
-                  />
-                ))}
-              </div>
-              {!machines.length && (
-                <Empty
-                  icon={<Server />}
-                  title="Bring your own compute"
-                  description="Enroll a machine and watch its inventory and health arrive in real time."
-                  action={
-                    <button
-                      className="button primary"
-                      onClick={() => open("machine")}
-                    >
-                      Add machine
-                    </button>
-                  }
-                />
-              )}
-            </section>
+            <FleetPanel
+              machines={machines}
+              services={data.services}
+              live={live}
+              stream={stream}
+              onSelect={setMachineDetail}
+              onAdd={() => open("machine")}
+              search={search}
+              history={fleetHistory}
+            />
           )}
           {page === "Databases" && (
-            <section className="panel">
-              <Databases data={data} refresh={refresh} live={mode === "live"} />
-            </section>
+            <Databases data={data} refresh={refresh} live={live} />
           )}
           {page === "Domains" && (
-            <section className="panel">
-              <Domains data={data} refresh={refresh} live={mode === "live"} />
-            </section>
+            <Domains data={data} refresh={refresh} live={live} />
           )}
           {page === "Activity" && (
-            <section className="panel">
-              <div className="section-heading">
-                <h2>Workspace activity</h2>
-                <span className="muted">Latest 30 events</span>
-              </div>
-              <ActivityList data={data} demoMode={mode === "demo"} />
-            </section>
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between gap-3">
+                <CardTitle className="text-[15px]">Workspace activity</CardTitle>
+                <Meta>Latest 30 events</Meta>
+              </CardHeader>
+              <CardContent className="px-3 pb-3">
+                <ActivityList data={data} demoMode={mode === "demo"} />
+              </CardContent>
+            </Card>
           )}
           {page === "Settings" && (
             <Setup
               data={data}
               refresh={refresh}
-              live={mode === "live"}
+              live={live}
               signIn={() => open("login")}
               signOut={signOut}
               explore={exploreDemo}
             />
           )}
-          <footer className="page-footer">
-            <span>
-              <Cloud size={13} /> A cloud of your own.
-            </span>
-            <span>
-              Personal Cloud <span className="muted">/</span> v0.2.0
-            </span>
+          <footer className="mt-auto flex items-center justify-between gap-4 pt-2">
+            <Meta>A cloud of your own.</Meta>
+            <Meta>Personal Cloud · {VERSION}</Meta>
           </footer>
         </main>
       </div>
-      {githubNotice && (
-        <div className="toast github-notice" role="status">
-          {githubNotice}
-          <button
-            className="text-button"
-            aria-label="Dismiss GitHub message"
-            onClick={() => setGithubNotice("")}
-          >
-            Dismiss
-          </button>
-        </div>
-      )}
-      {notice && (
-        <div className="toast" role="status">
-          <Check size={17} />
-          {notice}
-        </div>
-      )}
+      {toasts}
       {selected && !modal && (
-        <Dialog wide title={selected.name} onClose={() => setSelected(null)}>
+        <Dialog
+          size="wide"
+          title={selected.name}
+          onClose={() => setSelected(null)}
+        >
           <ProjectDetail
             project={selected}
             data={data}
             refresh={refresh}
-            live={mode === "live"}
+            live={live}
             addService={() => open("service")}
             onRemove={() => setSelected(null)}
           />
@@ -912,51 +1113,12 @@ function App() {
           title={machineDetail.report.hostname}
           onClose={() => setMachineDetail(null)}
         >
-          <div className="machine-detail-status">
-            <span
-              className={`dot ${machineDetail.status === "online" ? "green" : "amber"}`}
-            />
-            {machineDetail.status}
-            <span className="tag">{machineDetail.location}</span>
-          </div>
-          <dl className="detail-grid">
-            <dt>Operating system</dt>
-            <dd>{machineDetail.report.os}</dd>
-            <dt>Architecture</dt>
-            <dd>{machineDetail.report.architecture}</dd>
-            <dt>CPU</dt>
-            <dd>
-              {machineDetail.report.cpu_cores} cores ·{" "}
-              {machineDetail.report.cpu_percent.toFixed(0)}% in use
-            </dd>
-            <dt>Memory</dt>
-            <dd>
-              {size(machineDetail.report.memory_used)} /{" "}
-              {size(machineDetail.report.memory_total)}
-            </dd>
-            <dt>Storage</dt>
-            <dd>
-              {size(machineDetail.report.disk_used)} /{" "}
-              {size(machineDetail.report.disk_total)}
-            </dd>
-            <dt>Roles</dt>
-            <dd>{machineDetail.roles.join(", ")}</dd>
-            <dt>Tags</dt>
-            <dd>{machineDetail.tags.join(", ") || "None"}</dd>
-            <dt>Docker</dt>
-            <dd>
-              {machineDetail.report.docker ? "Responding" : "Unavailable"}
-            </dd>
-            <dt>Nomad</dt>
-            <dd>{machineDetail.report.nomad ? "Responding" : "Unavailable"}</dd>
-            <dt>Last heartbeat</dt>
-            <dd>
-              {mode === "demo"
-                ? "Sample data"
-                : new Date(machineDetail.last_seen).toLocaleString()}
-            </dd>
-          </dl>
-          {mode === "live" && (
+          <MachineDetailBody
+            machine={machineDetail}
+            live={live}
+            history={fleetHistory[machineDetail.id]}
+          />
+          {live && (
             <MachineSettings
               machine={machineDetail}
               refresh={refresh}
@@ -982,162 +1144,136 @@ function App() {
           }}
         >
           {modal === "machine" && mode === "demo" ? (
-            <>
-              <p className="dialog-intro">
+            <div className="flex flex-col gap-4">
+              <p className="text-sm text-muted-foreground">
                 Machines report to your own control plane. Connect your live
                 workspace to create a secure enrollment token.
               </p>
-              <div className="info-callout">
-                <Server size={20} />
-                <span>
-                  This is a sample fleet. Connecting your workspace opens your
-                  real machine inventory.
-                </span>
-              </div>
-              <button
-                className="button primary full"
-                onClick={() => open("login")}
-              >
-                Connect workspace <ArrowRight size={16} />
-              </button>
-            </>
+              <Alert>
+                <Server className="text-muted-foreground" />
+                This is a sample fleet. Connecting your workspace opens your
+                real machine inventory.
+              </Alert>
+              <Button className="w-full" onClick={() => open("login")}>
+                Connect workspace <ArrowRight />
+              </Button>
+            </div>
           ) : enrollment ? (
-            <>
-              <div className="success-heading">
-                <CheckCheck size={22} />
-                <div>
-                  <strong>Your enrollment token is ready</strong>
-                  <small>
-                    One use · expires{" "}
-                    {new Date(enrollment.expires_at).toLocaleTimeString()}
-                  </small>
-                </div>
-              </div>
-              <p className="dialog-intro">
+            <div className="flex flex-col gap-4">
+              <Alert variant="success">
+                <span className="font-medium">
+                  Your enrollment token is ready
+                </span>
+                <Meta className="text-primary/80">
+                  One use · expires{" "}
+                  {new Date(enrollment.expires_at).toLocaleTimeString()}
+                </Meta>
+              </Alert>
+              <p className="text-sm text-muted-foreground">
                 Run the installer on your Linux machine. It installs the
                 runtime, creates its private identity, and starts reporting to
                 your cloud.
               </p>
-              <label className="field">
-                Enrollment token
-                <div className="copy-field">
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="enrollment-token">Enrollment token</Label>
+                <div className="flex gap-2">
                   <input
+                    id="enrollment-token"
                     readOnly
                     type={revealToken ? "text" : "password"}
                     value={enrollment.token}
+                    className={cn(fieldClasses, "font-mono text-xs")}
                   />
-                  <button
-                    type="button"
-                    className="icon-button"
+                  <Button
+                    variant="outline"
+                    size="icon"
                     aria-label="Copy enrollment token"
                     onClick={() => copy(enrollment.token)}
                   >
-                    <Copy size={17} />
-                  </button>
+                    <Copy />
+                  </Button>
                 </div>
-              </label>
-              <button
-                className="text-button"
-                type="button"
-                onClick={() => setRevealToken(!revealToken)}
-              >
-                {revealToken ? "Hide token" : "Show token for manual copy"}
-              </button>
-              {error && (
-                <div className="form-error" role="alert">
-                  {error}
-                </div>
-              )}
-              <label className="field">
-                Install command
-                <textarea
-                  className="command"
+                <Button
+                  variant="link"
+                  size="xs"
+                  className="self-start px-0"
+                  onClick={() => setRevealToken(!revealToken)}
+                >
+                  {revealToken ? "Hide token" : "Show token for manual copy"}
+                </Button>
+              </div>
+              {error && <Alert variant="destructive">{error}</Alert>}
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="install-command">Install command</Label>
+                <Textarea
+                  id="install-command"
                   readOnly
                   rows={5}
-                  value={`curl -fsSL '${location.origin}/install.sh' | sudo env PC_API='${location.origin}' PC_ENROLL_TOKEN='${enrollment.token}'${enrollment.endpoint ? ` PC_WIREGUARD_ENDPOINT='${enrollment.endpoint}'` : ""} sh`}
+                  value={installCommand}
+                  className="font-mono text-xs"
                 />
-              </label>
-              <button
-                className="button secondary small"
-                onClick={() =>
-                  copy(
-                    `curl -fsSL '${location.origin}/install.sh' | sudo env PC_API='${location.origin}' PC_ENROLL_TOKEN='${enrollment.token}'${enrollment.endpoint ? ` PC_WIREGUARD_ENDPOINT='${enrollment.endpoint}'` : ""} sh`,
-                  )
-                }
-              >
-                <Copy size={15} />
-                Copy installer command
-              </button>
-              <div className="info-callout">
-                <LockKeyhole size={18} />
-                <span>
-                  Ubuntu 22.04/24.04 or Debian 12/13 with systemd. Run on the
-                  machine you want to enroll. Your control plane URL must be
-                  reachable from that machine.
-                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="self-start"
+                  onClick={() => copy(installCommand)}
+                >
+                  <Copy />
+                  Copy installer command
+                </Button>
               </div>
-              <button
-                className="button primary full"
+              <Alert className="text-muted-foreground">
+                <LockKeyhole />
+                Ubuntu 22.04/24.04 or Debian 12/13 with systemd. Run on the
+                machine you want to enroll. Your control plane URL must be
+                reachable from that machine.
+              </Alert>
+              <Button
+                className="w-full"
                 onClick={() => {
                   setModal(null);
                   setPage("Machines");
                 }}
               >
-                View machines <ArrowRight size={16} />
-              </button>
-            </>
+                View machines <ArrowRight />
+              </Button>
+            </div>
           ) : (
-            <form onSubmit={submit}>
+            <form onSubmit={submit} className="flex flex-col gap-4">
               {modal === "login" && (
                 <>
-                  <GitHubSignIn />
-                  <label className="field">
-                    Owner token
-                    <input
-                      autoFocus
-                      name="token"
-                      type="password"
-                      autoComplete="off"
-                      required
-                      minLength={32}
-                      placeholder="PC_ADMIN_TOKEN"
-                    />
-                  </label>
-                  <div className="info-callout">
-                    <LockKeyhole size={17} />
-                    <span>
-                      Your token is sent only to this workspace. The session
-                      uses a protected cookie.
-                    </span>
-                  </div>
-                  <button
+                  {loginFields}
+                  <Button
                     type="button"
-                    className="text-button"
+                    variant="link"
+                    size="xs"
+                    className="self-start px-0"
                     onClick={exploreDemo}
                   >
                     Explore sample workspace
-                  </button>
+                  </Button>
                 </>
               )}
               {modal === "project" && (
                 <>
-                  <p className="dialog-intro">
+                  <p className="text-sm text-muted-foreground">
                     Give your application a home. Start with a GitHub
                     repository, then add its services.
                   </p>
-                  <label className="field">
-                    Project name
-                    <input
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="project-name">Project name</Label>
+                    <Input
+                      id="project-name"
                       autoFocus
                       name="name"
                       required
                       maxLength={80}
                       placeholder="My next big thing"
                     />
-                  </label>
-                  <RepositoryField live={mode === "live"} />
+                  </div>
+                  <RepositoryField live={live} />
                   {mode === "demo" && (
-                    <p className="form-note">
+                    <p className="text-xs text-muted-foreground">
                       This project stays in your demo session.
                     </p>
                   )}
@@ -1145,94 +1281,93 @@ function App() {
               )}
               {modal === "machine" && (
                 <>
-                  <p className="dialog-intro">
+                  <p className="text-sm text-muted-foreground">
                     Choose where this machine lives and what it can do. We’ll
                     create a single-use token for the agent.
                   </p>
-                  <label className="field">
-                    Location
-                    <select name="location">
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="machine-location">Location</Label>
+                    <Select id="machine-location" name="location">
                       <option value="home">Home fleet</option>
                       <option value="vps">Cloud VPS</option>
                       <option value="dedicated">Dedicated server</option>
-                    </select>
-                  </label>
-                  <label className="field">
-                    Public network endpoint{" "}
-                    <span className="muted">optional</span>
-                    <input
+                    </Select>
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="machine-endpoint">
+                      Public network endpoint <Meta>optional</Meta>
+                    </Label>
+                    <Input
+                      id="machine-endpoint"
                       name="wireguard_endpoint"
                       placeholder="vps.example.com:51820"
                     />
-                    <small>
+                    <p className="text-xs text-muted-foreground">
                       For your first server, use a reachable hostname or IP with
                       UDP port 51820 so remote machines can join. A single
                       machine can run without this.
-                    </small>
-                  </label>
-                  <fieldset>
-                    <legend>Machine roles</legend>
-                    {["compute", "builder", "database"].map((role) => (
-                      <label className="check-option" key={role}>
-                        <input
-                          type="checkbox"
-                          name="roles"
-                          value={role}
-                          defaultChecked={
-                            role === "compute" ||
-                            (role === "builder" && data.machines.length === 0)
-                          }
-                        />
-                        <span>
+                    </p>
+                  </div>
+                  <fieldset className="flex flex-col gap-3">
+                    <legend className="mb-3 text-sm font-medium leading-none">
+                      Machine roles
+                    </legend>
+                    <div className="flex flex-wrap gap-x-5 gap-y-2">
+                      {["compute", "builder", "database"].map((role) => (
+                        <Label key={role} className="font-normal">
+                          <Checkbox
+                            name="roles"
+                            value={role}
+                            defaultChecked={
+                              role === "compute" ||
+                              (role === "builder" &&
+                                data.machines.length === 0)
+                            }
+                          />
                           {role.charAt(0).toUpperCase() + role.slice(1)}
-                        </span>
-                      </label>
-                    ))}
+                        </Label>
+                      ))}
+                    </div>
                   </fieldset>
-                  <label className="field">
-                    Tags <span className="muted">optional</span>
-                    <input name="tags" placeholder="home, high-memory" />
-                    <small>Comma-separated labels for your machine.</small>
-                  </label>
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="machine-tags">
+                      Tags <Meta>optional</Meta>
+                    </Label>
+                    <Input
+                      id="machine-tags"
+                      name="tags"
+                      placeholder="home, high-memory"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Comma-separated labels for your machine.
+                    </p>
+                  </div>
                 </>
               )}
               {modal === "service" && (
                 <>
-                  <p className="dialog-intro">
+                  <p className="text-sm text-muted-foreground">
                     Configure a component of {selected?.name}.
                   </p>
                   <ServiceFields data={data} />
-                  <p className="form-note">
+                  <p className="text-xs text-muted-foreground">
                     After creating the service, deploy its production branch
                     from the service details.
                   </p>
                 </>
               )}
-              {error && (
-                <div className="form-error" role="alert">
-                  {error}
-                </div>
-              )}
-              <div className="dialog-actions">
-                <button
+              {error && <Alert variant="destructive">{error}</Alert>}
+              <DialogFooter>
+                <Button
                   type="button"
-                  className="button secondary"
+                  variant="outline"
                   onClick={() => setModal(null)}
                 >
                   Cancel
-                </button>
-                <button className="button primary" disabled={busy}>
-                  {busy ? (
-                    <LoaderCircle size={15} className="spin" />
-                  ) : (
-                    <>
-                      {modal === "login" ? (
-                        <LockKeyhole size={15} />
-                      ) : (
-                        <Plus size={15} />
-                      )}
-                    </>
-                  )}
+                </Button>
+                {!(hosted && modal === "login") && <Button type="submit" isLoading={busy}>
+                  {!busy &&
+                    (modal === "login" ? <LockKeyhole /> : <Plus />)}
                   {busy
                     ? "Working…"
                     : modal === "project"
@@ -1242,8 +1377,8 @@ function App() {
                         : modal === "service"
                           ? "Add service"
                           : "Connect workspace"}
-                </button>
-              </div>
+                </Button>}
+              </DialogFooter>
             </form>
           )}
         </Dialog>
@@ -1265,90 +1400,19 @@ function Stat({
   icon: ReactNode;
 }) {
   return (
-    <div className="stat">
-      <div className="stat-label">
-        {label}
-        {icon}
+    <Card className="gap-3 p-6">
+      <div className="flex items-start justify-between gap-2">
+        <span className="gh-eyebrow">{label}</span>
+        <span className="text-muted-foreground [&_svg]:size-4">{icon}</span>
       </div>
-      <div className="stat-value">
-        {value}
-        <span>{unit}</span>
-      </div>
-      <div className="stat-detail">{detail}</div>
-    </div>
-  );
-}
-function MachineCard({
-  machine: m,
-  count,
-  onClick,
-}: {
-  machine: Machine;
-  count: number;
-  onClick: () => void;
-}) {
-  return (
-    <button className={`machine-card ${m.status}`} onClick={onClick}>
-      <div className="machine-card-top">
-        <span className={`machine-icon ${m.location}`}>
-          {m.location === "home" ? <Monitor size={20} /> : <Server size={20} />}
+      <div className="flex items-baseline gap-1.5">
+        <span className="text-2xl font-semibold tracking-tight tabular-nums">
+          {value}
         </span>
-        <span className={`location-label ${m.location}`}>
-          {m.location === "vps" ? "CLOUD VPS" : m.location.toUpperCase()}
-        </span>
-        <span
-          className={`dot ${m.status === "online" ? "green" : m.status === "offline" ? "gray" : "amber"}`}
-          aria-label={m.status}
-        />
+        {unit && <Meta>{unit}</Meta>}
       </div>
-      <div className="machine-name">
-        <span>{m.report.hostname}</span>
-        <ChevronRight size={14} />
-      </div>
-      <div className="machine-spec">
-        {m.report.cpu_cores} cores <span>·</span> {size(m.report.memory_total)}{" "}
-        <span>·</span> {m.report.architecture}
-      </div>
-      <div className="usage-label">
-        <span>CPU</span>
-        <span>
-          {m.report.cpu_percent.toFixed(0)}
-          <small>%</small>
-        </span>
-      </div>
-      <div className="meter">
-        <span style={{ width: `${m.report.cpu_percent}%` }} />
-      </div>
-      <div className="usage-label memory-label">
-        <span>Memory</span>
-        <span>
-          {size(m.report.memory_used)}{" "}
-          <small>/ {size(m.report.memory_total)}</small>
-        </span>
-      </div>
-      <div className="meter memory">
-        <span
-          style={{
-            width: `${m.report.memory_total ? (m.report.memory_used / m.report.memory_total) * 100 : 0}%`,
-          }}
-        />
-      </div>
-      <div className="machine-card-footer">
-        <span>
-          {m.roles.map((r) => (
-            <span className="role" key={r}>
-              {r}
-            </span>
-          ))}
-        </span>
-        {count > 0 && (
-          <span className="workload-count">
-            <Box size={11} />
-            {count}
-          </span>
-        )}
-      </div>
-    </button>
+      <Meta className="truncate">{detail}</Meta>
+    </Card>
   );
 }
 function ProjectList({
@@ -1361,71 +1425,79 @@ function ProjectList({
   onSelect: (p: Project) => void;
 }) {
   return (
-    <div className="project-list">
-      {projects.map((p, i) => {
+    <>
+      {projects.map((p) => {
         const services = data.services.filter((s) => s.project_id === p.id);
+        const hosts = [
+          ...new Set(
+            services
+              .map(
+                (s) =>
+                  data.machines.find(
+                    (m) => m.id === (s.machine_id ?? s.demo_machine),
+                  )?.report.hostname,
+              )
+              .filter(Boolean),
+          ),
+        ].join(", ");
+        const healthy =
+          services.length > 0 &&
+          services.every((s) => (s.status ?? s.demo_status) === "healthy");
+        const health = healthy
+          ? { status: "healthy", label: "Healthy" }
+          : services.some(
+                (s) => s.status === "failed" || s.status === "unhealthy",
+              )
+            ? { status: "failed", label: "Needs attention" }
+            : services.some((s) => s.status && s.status !== "not_deployed")
+              ? { status: "deploying", label: "Deploying" }
+              : { status: "idle", label: "Not deployed" };
         return (
           <button
-            className="project-row"
+            type="button"
             key={p.id}
             onClick={() => onSelect(p)}
+            className="gh-interactive flex w-full items-center gap-3 rounded-md border border-transparent px-3 py-2.5 text-left"
           >
-            <span className={`project-icon color-${i % 3}`}>
-              {i % 3 === 0 ? (
-                <Layers3 size={20} />
-              ) : i % 3 === 1 ? (
-                <Terminal size={20} />
-              ) : (
-                <Globe2 size={20} />
-              )}
+            <span className="grid size-9 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">
+              <Layers3 className="size-4" />
             </span>
-            <span className="project-identity">
-              <strong>{p.name}</strong>
-              <small>
-                <GitFork size={11} />
-                {p.repository}
-              </small>
+            <span className="flex min-w-0 flex-1 flex-col gap-1">
+              <span className="truncate text-[15px] font-medium leading-none">
+                {p.name}
+              </span>
+              <Meta className="flex items-center gap-1 truncate">
+                <GitFork className="size-3 shrink-0" />
+                <span className="truncate">{p.repository}</span>
+              </Meta>
             </span>
-            <span className="project-services">
-              {services.length} {services.length === 1 ? "service" : "services"}
-              <small>
-                {[
-                  ...new Set(
-                    services
-                      .map(
-                        (s) =>
-                          data.machines.find(
-                            (m) => m.id === (s.machine_id ?? s.demo_machine),
-                          )?.report.hostname,
-                      )
-                      .filter(Boolean),
-                  ),
-                ].join(", ") || "Ready to configure"}
-              </small>
+            <span className="hidden shrink-0 flex-col items-end gap-1 sm:flex">
+              <span className="text-sm tabular-nums">
+                {services.length}{" "}
+                {services.length === 1 ? "service" : "services"}
+              </span>
+              <Meta className="max-w-48 truncate">
+                {hosts || "Ready to configure"}
+              </Meta>
             </span>
             <span
-              className={`project-status ${services.length > 0 && services.every((s) => (s.status ?? s.demo_status) === "healthy") ? "healthy" : ""}`}
+              className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground"
+              title={health.label}
             >
-              <span className="dot" />
-              {services.length > 0 &&
-              services.every((s) => (s.status ?? s.demo_status) === "healthy")
-                ? "Healthy"
-                : services.some(
-                      (s) => s.status === "failed" || s.status === "unhealthy",
-                    )
-                  ? "Needs attention"
-                  : services.some(
-                        (s) => s.status && s.status !== "not_deployed",
-                      )
-                    ? "Deploying"
-                    : "Not deployed"}
+              <StatusDot status={health.status} />
+              <span className="hidden md:inline">{health.label}</span>
             </span>
-            <ChevronRight size={15} />
+            <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
           </button>
         );
       })}
-    </div>
+    </>
   );
+}
+function activityStatus(kind: string) {
+  const state = kind.split(".").pop() ?? "";
+  if (state in statusDot) return state;
+  return state === "created" || state === "joined" ? "done" : "idle";
 }
 function ActivityList({
   data,
@@ -1435,23 +1507,16 @@ function ActivityList({
   demoMode: boolean;
 }) {
   return (
-    <div className="activity-list">
+    <div className="flex flex-col">
       {data.activity.map((e, i) => (
-        <div className="activity-item" key={e.id}>
-          <span
-            className={`activity-icon ${e.kind.includes("healthy") ? "success" : ""}`}
-          >
-            {e.kind.startsWith("machine") ? (
-              <Server size={14} />
-            ) : e.kind.startsWith("deployment") ? (
-              <Check size={14} />
-            ) : (
-              <Plus size={14} />
-            )}
-          </span>
-          <div>
-            <p>{e.message}</p>
-            <small>
+        <div
+          key={e.id}
+          className="flex items-start gap-3 border-b border-border px-3 py-2.5 last:border-0"
+        >
+          <StatusDot status={activityStatus(e.kind)} className="mt-1.5" />
+          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <p className="text-sm">{e.message}</p>
+            <Meta>
               {demoMode
                 ? [
                     "2 minutes ago · sample",
@@ -1459,86 +1524,18 @@ function ActivityList({
                     "2 hours ago · sample",
                   ][i % 3]
                 : new Date(e.created_at).toLocaleString()}
-            </small>
+            </Meta>
           </div>
         </div>
       ))}
       {!data.activity.length && (
-        <div className="quiet-state">
-          <Activity size={23} />
-          <p>Quiet for now.</p>
-          <small>Your cloud’s story will appear here.</small>
-        </div>
+        <EmptyState
+          icon={<Activity />}
+          title="Quiet for now."
+          description="Your cloud’s story will appear here."
+          className="py-10"
+        />
       )}
     </div>
-  );
-}
-function Empty({
-  icon,
-  title,
-  description,
-  action,
-}: {
-  icon: ReactNode;
-  title: string;
-  description: string;
-  action?: ReactNode;
-}) {
-  return (
-    <div className="empty-state">
-      <span className="empty-icon">{icon}</span>
-      <h3>{title}</h3>
-      <p>{description}</p>
-      {action}
-    </div>
-  );
-}
-function Dialog({
-  title,
-  children,
-  onClose,
-  wide = false,
-}: {
-  wide?: boolean;
-  title: string;
-  children: ReactNode;
-  onClose: () => void;
-}) {
-  const titleId = useId();
-  const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    const d = ref.current;
-    const previous = document.activeElement as HTMLElement;
-    d?.showModal();
-    d?.querySelector<HTMLInputElement>(
-      'input:not([type="checkbox"]), select',
-    )?.focus();
-    return () => {
-      d?.close();
-      previous?.focus();
-    };
-  }, []);
-  return (
-    <dialog
-      ref={ref}
-      className={wide ? "wide-dialog" : undefined}
-      aria-labelledby={titleId}
-      onCancel={onClose}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="dialog-header">
-        <h2 id={titleId}>{title}</h2>
-        <button
-          className="icon-button"
-          aria-label="Close dialog"
-          onClick={onClose}
-        >
-          <X size={20} />
-        </button>
-      </div>
-      <div className="dialog-body">{children}</div>
-    </dialog>
   );
 }
