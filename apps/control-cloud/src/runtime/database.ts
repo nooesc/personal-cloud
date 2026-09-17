@@ -17,6 +17,11 @@ import {
 import { databaseJob, databaseProbe, privateAddress, ready } from "./jobs";
 
 function bind(ctx: WorkspaceContext, db: Doc, serviceId: string): void {
+  if (
+    db.restore_id &&
+    ctx.store.get("database_backups", db.restore_id)?.status !== "succeeded"
+  )
+    fail(409, "Wait for a successful restore before attaching this database");
   const service = get(ctx, "services", serviceId);
   if (service.project_id !== db.project_id)
     fail(400, "Attach services from this database project");
@@ -32,7 +37,11 @@ function bind(ctx: WorkspaceContext, db: Doc, serviceId: string): void {
 export async function createDatabase(
   ctx: WorkspaceContext,
   input: Doc,
+  reservedId?: string,
+  restoreId?: string,
 ): Promise<Doc> {
+  if (reservedId && ctx.store.get("databases", reservedId))
+    return publicDatabase(get(ctx, "databases", reservedId));
   get(ctx, "projects", input.project_id);
   const name = text(input.name, 80),
     services = input.service_ids ?? [];
@@ -49,7 +58,7 @@ export async function createDatabase(
       409,
       "Choose an online database-role machine with a ready Docker scheduler node",
     );
-  const databaseId = id(),
+  const databaseId = reservedId ?? id(),
     user = `pc_${databaseId.replaceAll("-", "")}`;
   const password = Array.from(crypto.getRandomValues(new Uint8Array(32)), (v) =>
     v.toString(16).padStart(2, "0"),
@@ -57,6 +66,7 @@ export async function createDatabase(
   const uri = `postgresql://${user}:${password}@pending.invalid:5432/${user}?sslmode=disable`;
   const db: Doc = {
     id: databaseId,
+    ...(restoreId ? { restore_id: restoreId } : {}),
     project_id: input.project_id,
     name,
     engine: "postgresql",
@@ -135,6 +145,30 @@ export async function removeDatabase(
   dbId: string,
 ): Promise<Doc> {
   const db = get(ctx, "databases", dbId);
+  if (
+    ctx.store
+      .list("database_backups")
+      .some(
+        (b) =>
+          ["queued", "provisioning", "running"].includes(b.status) &&
+          (b.database_id === dbId || b.target_database_id === dbId),
+      )
+  )
+    fail(
+      409,
+      "Wait for the database backup or restore to finish before removing it",
+    );
+  if (
+    ctx.store
+      .list("database_backups")
+      .some(
+        (b) =>
+          b.database_id === dbId &&
+          b.kind === "backup" &&
+          ["succeeded", "expiring"].includes(b.status),
+      )
+  )
+    fail(409, "Delete retained backup copies before removing this database");
   // Detached workloads may still be using these credentials; explicit removal preserves all disk data.
   db.status = "deleting";
   db.phase = "delete";
@@ -209,6 +243,7 @@ async function remove(ctx: WorkspaceContext, db: Doc): Promise<void> {
       .list("bindings")
       .filter((b) => b.database_id === db.id))
       ctx.store.delete("bindings", binding.service_id);
+    ctx.store.delete("backup_policies", db.id);
     ctx.store.delete("databases", db.id);
     ctx.event(
       "database.removed",

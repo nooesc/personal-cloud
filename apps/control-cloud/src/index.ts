@@ -27,7 +27,12 @@ export default {
         return await handleRegistry(request, env);
       const migration = await handleMigration(request, env);
       if (migration) return migration;
-      if (request.body) {
+      const binaryUpload =
+        request.method === "PUT" &&
+        /^\/api\/agent\/[^/]+\/(?:database-backups\/[^/]+\/data|apple-jobs\/[^/]+\/artifact)$/.test(
+          url.pathname,
+        );
+      if (request.body && !binaryUpload) {
         const value = await boundedText(request);
         request = new Request(request, { body: value });
       }

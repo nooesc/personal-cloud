@@ -270,5 +270,13 @@ export function publicDeployment(d: Doc): Doc {
 }
 export function publicDatabase(d: Doc): Doc {
   const { connection_encrypted, job_encrypted, ...safe } = d;
-  return safe;
+  return d.restore_id && d.restore_status !== "succeeded"
+    ? {
+        ...safe,
+        status: d.restore_status === "failed" ? "restore_failed" : "restoring",
+        error:
+          d.restore_error ??
+          "Restore destination is not available until restoration succeeds",
+      }
+    : safe;
 }
