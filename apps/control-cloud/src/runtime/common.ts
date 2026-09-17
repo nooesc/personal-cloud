@@ -1,3 +1,4 @@
+import { providerEnvironment } from "../database-providers";
 import { fail, now, type Doc, type WorkspaceContext } from "../core";
 import { redact } from "./jobs";
 export const ACTIVE = ["queued", "building", "deploying"];
@@ -214,6 +215,11 @@ export async function environment(
       `database:${db.id}`,
       db.connection_encrypted,
     );
+  }
+  const external = await providerEnvironment(ctx, service);
+  for (const [key, value] of Object.entries(external)) {
+    if (key in result && result[key] !== value) fail(409, `Remove the conflicting ${key} project variable or database binding before deploying`);
+    result[key] = value;
   }
   return result;
 }

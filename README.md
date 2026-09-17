@@ -71,6 +71,7 @@ The explicit source-build path downloads Rust/Node build dependencies inside Doc
 - **Applications:** GitHub repository selection, production-branch builds, automatic or explicit placement, resource limits, health checks, immutable image deployments, and rollback without rebuilding.
 - **Builds:** Railpack detection/build planning, BuildKit builds, OCI image upload, scheduler placement, and ordered build progress with visible failure details.
 - **Secrets:** encrypted project variables with explicit reveal; changes take effect on the next deployment.
+- **Neon and Convex connections (hosted edition):** connect Neon organizations and Convex teams, browse their projects, and attach selected resource URLs to apps. Existing self-hosted Convex backends can be connected over HTTPS. See [provider setup and limits](docs/database-providers.md); native Convex provisioning and build-time URL injection are not included.
 - **PostgreSQL:** provision a persistent database on a healthy database-role machine, attach `DATABASE_URL` to a service, reveal connection credentials explicitly, and monitor health. Database placement stays pinned. Removing a database preserves its volume.
 - **Domains:** provision Cloudflare Tunnel/DNS routing for healthy services and remove only the resources owned by dinghy.
 - **Observability:** live fleet snapshots, deployment progress, activity, service logs, and allocation metrics. Connection failures remain visible; live failures never switch to sample data.

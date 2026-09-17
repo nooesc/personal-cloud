@@ -1,3 +1,4 @@
+import { DatabaseProviderPanel } from "./databases/providers";
 import { hosted } from "../lib/hosted";
 import { GitHubAppPanel } from "./github";
 import { useContext, useEffect, useState, type FormEvent, type ReactNode } from "react";
@@ -283,6 +284,7 @@ export function Setup({
     );
   return (
     <div className="grid gap-6 lg:grid-cols-2">
+      <DatabaseProviderPanel data={data} live={live} refresh={refresh} settings />
       <Card className="lg:col-span-2">
         <CardHeader>
           <Eyebrow>Your first deployment</Eyebrow>

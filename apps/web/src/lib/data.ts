@@ -223,7 +223,11 @@ export type CloudflareOverview = {
   /** Absent on control planes without project organization. */
   organization?: Organization;
 };
+export type DatabaseAccount = { id: string; provider: "neon" | "convex"; name: string; scope_id: string; checked_at: string };
+export type ProviderResource = { id: string; provider: "neon" | "convex" | "convex_self_hosted"; name: string; project_id: string; account_id?: string; provider_project_id?: string; branch_id?: string; database_name?: string; role_name?: string; url?: string; address?: string; deployment?: string; environment?: string; checked_at: string };
+export type DatabaseProviders = { accounts: DatabaseAccount[]; resources: ProviderResource[]; bindings: { id: string; service_id: string; resource_id: string; variable: string }[] };
 export type Snapshot = {
+  database_providers?: DatabaseProviders;
   machines: Machine[];
   projects: Project[];
   services: Service[];

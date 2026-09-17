@@ -1,3 +1,4 @@
+import { DatabaseProviderPanel } from "./providers";
 import { useMemo, useState, type ReactNode } from "react";
 import { ArrowRight, Database, Plus } from "lucide-react";
 import type { DatabaseInstance, Snapshot } from "../../lib/data";
@@ -104,6 +105,7 @@ export function Databases({
         </Reveal>
       )}
 
+      <DatabaseProviderPanel data={data} live={live} refresh={refresh} projectId={projectId} />
       {databases.length === 0 ? (
         <Reveal delay={0.05}>
           <EmptyDatabases

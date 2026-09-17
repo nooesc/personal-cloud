@@ -25,6 +25,7 @@ function bind(ctx: WorkspaceContext, db: Doc, serviceId: string): void {
   const service = get(ctx, "services", serviceId);
   if (service.project_id !== db.project_id)
     fail(400, "Attach services from this database project");
+  if (ctx.store.get("provider_bindings", `${serviceId}:postgres`)) fail(409, "Detach Neon before attaching a fleet database");
   const existing = ctx.store.get("bindings", serviceId);
   if (existing && existing.database_id !== db.id)
     fail(409, "Service already has a database attached");
