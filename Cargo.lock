@@ -1503,7 +1503,9 @@ name = "personal-cloud-agent"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "base64",
  "clap",
+ "libc",
  "personal-cloud-core",
  "reqwest",
  "serde",

@@ -89,9 +89,25 @@ export default {
     } catch (error) {
       if (error instanceof HttpError)
         return json({ error: error.message }, error.status);
+      if (
+        error instanceof Error &&
+        /Exceeded allowed .*Durable Objects free tier/i.test(error.message)
+      ) {
+        return Response.json(
+          {
+            error:
+              "Workspace storage has reached its Cloudflare hosting limit. The operator must restore capacity or wait for the daily allowance to reset.",
+            code: "storage_quota_exceeded",
+          },
+          {
+            status: 503,
+            headers: { "Cache-Control": "no-store", "Retry-After": "60" },
+          },
+        );
+      }
       console.error(
         "hosted request failed",
-        error instanceof Error ? error.name : "unknown",
+        error instanceof Error ? `${error.name}: ${error.message}` : "unknown",
       );
       return json({ error: "Request failed" }, 500);
     }

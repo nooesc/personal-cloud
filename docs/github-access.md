@@ -1,6 +1,6 @@
 # GitHub sign-in and repository access
 
-Personal Cloud uses a GitHub App for two separate jobs: verifying the workspace owner's identity and granting access to selected source repositories. This remains a single-owner workspace. Installing the app on an organization does not let its members sign into the dashboard.
+dinghy uses a GitHub App for two separate jobs: verifying the workspace owner's identity and granting access to selected source repositories. This remains a single-owner workspace. Installing the app on an organization does not let its members sign into the dashboard.
 
 ## First-time setup
 

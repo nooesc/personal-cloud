@@ -1,4 +1,4 @@
-# Cloudflare hosted Personal Cloud
+# Cloudflare hosted dinghy
 
 The hosted edition runs the web application and control plane on Cloudflare. Each customer signs in with GitHub, creates a workspace, installs the existing Rust agent on their machines, and deploys into that workspace. Application containers, builders and persistent databases run on customer machines. The management service does not require a running Mac or PostgreSQL server.
 
@@ -68,11 +68,102 @@ The Python integration check is restricted to localhost and creates explicitly s
 
 ## Registry limits and retention
 
-The managed OCI endpoint supports image manifest/index push and pull, blob uploads, ranged reads and tag listing. Upload requests require Content-Length and are limited to 100 MiB per chunk; larger layers need chunked resumable uploads. Incomplete upload state expires after 24 hours. Image garbage collection is not implemented: configure image retention before offering unbounded storage. Customer PostgreSQL backups are opt-in; see below.
+The managed OCI endpoint supports image manifest/index push and pull, blob uploads, ranged reads and tag listing. Upload requests require Content-Length and are limited to 100 MiB per chunk; larger layers need chunked resumable uploads. Incomplete upload state expires after 24 hours. Image garbage collection is not implemented: configure operational retention before offering unbounded image storage. Customer PostgreSQL backup scheduling is opt-in; see the backup and restore section below. Image storage alone does not protect database volumes.
 
 ## Migration
 
 See `hosted-migration.md`. Migration is explicit, operator-authenticated and into an empty hosted workspace; it preserves machine credential hashes and persistent ownership. Do not run both controllers against the same fleet. Keep the old database/keys and a reversible routing change until the hosted controller, existing agents, applications and domains are observed working.
+
+## Deployment readiness and guided setup
+
+The hosted snapshot includes `readiness`, the shared source for workspace prerequisites and machine capabilities. Agent contact is distinct from permission to run workloads. A recent agent heartbeat alone does not make a machine deployment-ready: readiness also requires a recent scheduler observation, an eligible non-draining node, and a healthy Docker driver. New-server role recommendations include Builder whenever no verified builder exists, including when the workspace already contains inventory-only computers.
+
+Scheduler observations refresh in the background when the dashboard requests a snapshot. The snapshot does not block on a fleet request. Observations expire after 30 seconds, coordinator changes invalidate them, and unverified or unavailable capability remains visibly checking/blocked. These are prerequisite observations, not a guarantee that a subsequent build, resource allocation, health check, or public route will succeed.
+
+`GET /api/services/:id/preflight` checks the service's placement/architecture against a compatible compute/build pair, then verifies access to its selected GitHub repository and branch. Interactive source deployments through `POST /api/services/:id/deploy` repeat the check and return `409` (blocked) or `503` (checking), with `{error, readiness}`, without creating a deployment. Actual deployment reconciliation still checks runtime eligibility and source access. Immutable-image and rollback requests retain their separate provenance checks. Webhook deployments retain the existing durable queue and failure history rather than retrying a blocked interactive preflight indefinitely.
+
+Snapshots also include a bounded `enrollments` list containing only ID, expiry, waiting/connected status and the resulting machine ID. Tokens and hashes are omitted. This allows installation progress to follow the correct machine rather than guessing from fleet size. An omitted service port defaults to 3000; it is a configurable default, not repository detection.
+
+These additions are backward-compatible for existing agents and require no storage migration. The retained self-hosted API does not yet publish this readiness contract; clients must show readiness as unavailable instead of deriving an optimistic answer.
+
+Validation: focused tests cover inventory-only machines, stale/mismatched observations, drained and ineligible nodes, lost agent runtime capability, CPU architecture matching, repository prerequisites and coordinator removal races. `apps/control-cloud/test/hosted-local.py` additionally exercises the actual local D1/SQLite Durable Object/R2 APIs, enrollment progress, tenant isolation, blocked deploys with no deployment record, and readiness refresh/drain invalidation using a scheduler-protocol simulator. The simulator is not evidence of a successful real Nomad deployment.
+
+Unused enrollment commands can be revoked with `DELETE /api/enrollment-tokens/:id` before generating a replacement. Revocation is recorded in the workspace before routing cleanup, so an in-flight enrollment cannot consume a revoked command. Already-connected grants are protected; machine retirement remains a separate operation.
+
+The guided installer requests `setup_intent: "runtime"` when creating an enrollment token. Before the agent reports runtime capabilities, that newly enrolled machine is shown as checking for up to 15 minutes, never as ready. An overdue setup becomes actionable; ordinary inventory-only tokens retain monitoring-only behavior. Intent is not evidence that installation succeeded.
+
+### Cloudflare account overview
+
+The hosted Overview optionally lists a workspace's Cloudflare Workers and Pages projects.
+This inventory connection is separate from dinghy's managed domain/R2 hosting: global
+`CF_API_TOKEN` credentials are never used to reveal the operator account to customers.
+An existing encrypted, workspace-imported Cloudflare connection can supply inventory;
+otherwise connect an account ID and API token from Overview. Use account-scoped
+**Workers Scripts Read**, **Pages Read**, and **Account Analytics Read** permissions.
+Tokens are encrypted using the workspace-bound encryption context and never returned.
+Disconnecting inventory preserves imported domain credentials and managed hosting.
+
+Workers show uploaded scripts, modification dates, dashboard links, and the last 24 hours
+of requests, invocation errors, and subrequests. These are Cloudflare's sampled analytics,
+not uptime checks or HTTP error totals. Pages show their production branch and canonical
+production deployment status/date; Pages traffic analytics are not included. Provider
+failures and missing permissions appear explicitly, with unavailable metrics left null.
+Results are cached for 60 seconds per workspace, concurrent reads are deduplicated, and
+an account change invalidates both cached and in-flight responses. The inventory is
+bounded to 1,000 Workers and 100 Pages projects and reports truncation instead of hiding it.
+
+Provider references: [Workers scripts](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/methods/list/),
+[Pages projects](https://developers.cloudflare.com/api/resources/pages/subresources/projects/methods/list/),
+[Workers analytics](https://developers.cloudflare.com/analytics/graphql-api/tutorials/querying-workers-metrics/).
+
+## Organizing existing cloud apps
+
+Hosted projects can contain existing Cloudflare Workers/Pages without a repository or
+fleet setup. The optional organization flow discovers inventory, offers editable
+name/environment suggestions, and stores accepted associations in the workspace's
+`project_resources` collection. It does not adopt the existing deployment pipeline.
+Connect a GitHub repository explicitly before adding a machine service.
+
+Resource identity is `(account_id, kind, name)`. Each resource has one project owner or
+an ignored marker; shared infrastructure relationships are not part of this first slice.
+A workspace revision prevents a stale browser from overwriting another organization
+edit. Inventory connection revisions independently reject reconnect/disconnect races.
+The batch validates before a single SQLite transaction; provider reads happen first,
+never within that transaction. No schema migration or provider writes are required.
+
+Use existing resources first. Paid provisioning and plan changes are not enabled by
+organization. The UI must not call an unknown Cloudflare plan free or interpret request
+counts as cost/remaining allowance. Free-tier eligibility, quotas, and optional paid
+capabilities require provider-specific evidence before a future provisioning flow.
+
+Existing addresses are read from the connected account: Worker custom domains
+(Workers Domains API), enabled `workers.dev` routes (the account subdomain plus one
+enabled-check per script, capped at 200 scripts with the remainder reported
+unchecked; a disabled route is never listed), and Pages custom domains from the
+project listing. They are shown under Domains and on project cards for the project
+owning that exact resource. These provider-owned addresses are read-only; Dinghy
+does not recreate them or change DNS. Account and script identity must match, and
+named legacy Worker service environments are not inferred from script names. Each
+source that fails is an explicit issue next to whatever the others returned; the
+list is null only when no source answered. A row without an address means nothing
+was reported, not that none exists.
+
+Project cards join the same overview: each linked row shows its first reported
+address, the footer sums 24h sampled requests and invocation errors across
+production Workers, and "updated" is the latest deployment, Worker upload or Pages
+deployment. Without machine services the card's status comes from these
+observations only: a failed Pages production deployment, sampled invocation errors,
+observed requests, or no traffic. None of these is a serving check, and the card
+shows nothing until Cloudflare has answered.
+
+Each card also carries two sparklines. "req · 24h" is the hourly shape of sampled
+requests across production Workers, from a second Workers analytics query grouped
+by hour; it is null (a flat grey line and "—") when that query fails or exceeds the
+row limit, and the totals beside it come from the separate ungrouped query so they
+never depend on it. "deploys · 14d" counts deployments per day: dinghy deployments,
+Worker version uploads (one versions request per script) and Pages production
+deployments (one request per project). Per-resource checks are capped at 200 per
+kind; the remainder is reported as an explicit "not checked" issue.
 
 ### PostgreSQL backups and restore copies
 

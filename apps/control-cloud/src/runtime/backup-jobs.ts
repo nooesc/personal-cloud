@@ -37,7 +37,7 @@ export function backupJob(
       `pg_dump -w --format=custom --no-owner --no-acl --file=/alloc/data/backup.dump; test "$(wc -c < /alloc/data/backup.dump)" -le ${BACKUP_MAX}`,
     ];
     transfer.Config.args[1] =
-      'digest=$(sha256sum /alloc/data/backup.dump); digest=${digest%% *}; curl --fail --silent --show-error --max-time 600 -X PUT -H "Authorization: Bearer $BACKUP_TOKEN" -H "x-backup-sha256: $digest" --upload-file /alloc/data/backup.dump "$BACKUP_URL"';
+      'digest=$(sha256sum /alloc/data/backup.dump | cut -d " " -f 1); curl --fail --silent --show-error --max-time 600 -X PUT -H "Authorization: Bearer $BACKUP_TOKEN" -H "x-backup-sha256: $digest" --upload-file /alloc/data/backup.dump "$BACKUP_URL"';
     group.Tasks = [postgres, transfer];
   } else {
     transfer.Lifecycle = { Hook: "prestart", Sidecar: false };

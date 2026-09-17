@@ -49,7 +49,7 @@ export async function handleRegistry(
     const authorization = request.headers.get("Authorization");
     if (!authorization?.startsWith("Basic "))
       return registryResponse(null, 401, {
-        "WWW-Authenticate": 'Basic realm="Personal Cloud images"',
+        "WWW-Authenticate": 'Basic realm="dinghy images"',
       });
     let login: string;
     try {
@@ -74,7 +74,7 @@ export async function handleRegistry(
     );
     if (!auth.ok)
       return registryResponse(null, 401, {
-        "WWW-Authenticate": 'Basic realm="Personal Cloud images"',
+        "WWW-Authenticate": 'Basic realm="dinghy images"',
       });
     const url = new URL(request.url),
       path = decodeURIComponent(url.pathname);

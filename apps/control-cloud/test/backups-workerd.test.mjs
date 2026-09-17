@@ -150,6 +150,9 @@ test("backup scheduling, R2 checksum, workspace isolation, isolated restore and 
       job = inspect.jobs[0];
     const transfer = job.TaskGroups[0].Tasks.find((t) => t.Name === "transfer"),
       auth = { user: "", Authorization: "Bearer " + transfer.Env.BACKUP_TOKEN };
+    // Nomad interpolates Docker config before the shell runs. Shell parameter
+    // expansion such as ${digest%% *} fails Nomad's expression parser.
+    assert.doesNotMatch(transfer.Config.args.join(" "), /\$\{/);
     const url = new URL(transfer.Env.BACKUP_URL).pathname;
     const bytes = dump,
       digest = await crypto.subtle.digest("SHA-256", bytes);

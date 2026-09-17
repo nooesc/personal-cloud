@@ -57,7 +57,7 @@ export function transformLegacy(source, options) {
     targetKey,
     workspaceId = randomUUID(),
     userId = randomUUID(),
-    workspaceName = "Personal Cloud",
+    workspaceName = "dinghy",
     publicUrl,
   } = options;
   demand(

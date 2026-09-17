@@ -2,8 +2,10 @@ import { ChevronDown, EyeIcon, EyeOffIcon } from "lucide-react";
 import * as React from "react";
 import { cn } from "../../lib/utils";
 
+// Verbatim from Dinghy components/ui/input.tsx; the stock h-10 is tightened by
+// the [data-slot="input"] override in styles.css.
 const fieldClasses =
-  "h-9 w-full min-w-0 rounded-lg border border-input bg-transparent px-3 py-2 text-sm transition-colors outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:bg-input/50 disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:bg-input/30 dark:disabled:bg-input/80";
+  "h-10 w-full min-w-0 rounded-lg border border-input bg-transparent px-3 py-2 text-sm transition-colors outline-none file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:bg-input/50 disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 md:text-sm dark:bg-input/30 dark:disabled:bg-input/80 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40";
 
 function Input({ className, type, ...props }: React.ComponentProps<"input">) {
   const [show, setShow] = React.useState(false);
@@ -36,7 +38,7 @@ function Textarea({ className, ...props }: React.ComponentProps<"textarea">) {
     <textarea
       data-slot="textarea"
       className={cn(
-        "flex field-sizing-content min-h-[80px] w-full [overflow-wrap:anywhere] rounded-lg border border-input bg-transparent px-3 py-2 text-sm transition-colors outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:bg-input/50 disabled:opacity-50 dark:bg-input/30",
+        "flex field-sizing-content min-h-[80px] w-full [overflow-wrap:anywhere] rounded-lg border border-input bg-transparent px-3 py-2 text-base transition-colors outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:bg-input/50 disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 md:text-sm dark:bg-input/30 dark:disabled:bg-input/80 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40",
         className,
       )}
       {...props}
@@ -44,6 +46,9 @@ function Textarea({ className, ...props }: React.ComponentProps<"textarea">) {
   );
 }
 
+// Native <select>. Dinghy's SelectTrigger string, with `pr-2` -> `pr-8` to make
+// room for the absolutely positioned chevron and `appearance-none` to hide the
+// platform one.
 function Select({
   className,
   size = "default",
@@ -56,8 +61,7 @@ function Select({
         data-slot="select-trigger"
         data-size={size}
         className={cn(
-          "flex w-full appearance-none items-center justify-between gap-1.5 rounded-lg border border-input bg-transparent py-2 pr-8 pl-2.5 text-sm whitespace-nowrap transition-colors outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-input/30 dark:hover:bg-input/50",
-          size === "default" ? "h-9" : "h-8 rounded-[min(var(--radius-md),10px)]",
+          "flex w-full appearance-none items-center justify-between gap-1.5 rounded-lg border border-input bg-transparent py-2 pr-8 pl-2.5 text-sm whitespace-nowrap transition-colors outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 data-placeholder:text-muted-foreground data-[size=default]:h-10 data-[size=sm]:h-9 data-[size=sm]:rounded-[min(var(--radius-md),10px)] *:data-[slot=select-value]:line-clamp-1 *:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center *:data-[slot=select-value]:gap-1.5 dark:bg-input/30 dark:hover:bg-input/50 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
           className,
         )}
         {...props}
@@ -74,7 +78,7 @@ function Label({ className, ...props }: React.ComponentProps<"label">) {
     <label
       data-slot="label"
       className={cn(
-        "flex items-center gap-2 text-sm leading-none font-medium select-none peer-disabled:cursor-not-allowed peer-disabled:opacity-50",
+        "flex items-center gap-2 text-sm leading-none font-medium select-none group-data-[disabled=true]:pointer-events-none group-data-[disabled=true]:opacity-50 peer-disabled:cursor-not-allowed peer-disabled:opacity-50",
         className,
       )}
       {...props}
@@ -82,13 +86,15 @@ function Label({ className, ...props }: React.ComponentProps<"label">) {
   );
 }
 
+// Native checkbox: Dinghy's root string with Radix `data-checked:` -> `:checked`
+// and `appearance-none`. The check glyph is drawn by styles.css.
 function Checkbox({ className, ...props }: React.ComponentProps<"input">) {
   return (
     <input
       type="checkbox"
       data-slot="checkbox"
       className={cn(
-        "peer size-4 shrink-0 appearance-none rounded-[4px] border border-input bg-card transition-colors outline-none checked:border-primary focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-input/30",
+        "peer relative flex size-4 shrink-0 appearance-none items-center justify-center rounded-[4px] border border-input transition-colors outline-none group-has-disabled/field:opacity-50 after:absolute after:-inset-x-3 after:-inset-y-2 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 aria-invalid:checked:border-primary dark:bg-input/30 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 checked:border-primary checked:bg-primary checked:text-primary-foreground dark:checked:bg-primary",
         className,
       )}
       {...props}
@@ -96,6 +102,9 @@ function Checkbox({ className, ...props }: React.ComponentProps<"input">) {
   );
 }
 
+// Native button[role=switch]: Dinghy's strings with Radix `data-checked` /
+// `data-unchecked` -> `data-[state=checked]` / `data-[state=unchecked]` (both
+// root and thumb carry data-state, as Radix's do) and `data-disabled:` -> `disabled:`.
 function Switch({
   checked,
   onCheckedChange,
@@ -107,6 +116,7 @@ function Switch({
   onCheckedChange: (checked: boolean) => void;
   size?: "sm" | "default";
 }) {
+  const state = checked ? "checked" : "unchecked";
   return (
     <button
       type="button"
@@ -114,27 +124,18 @@ function Switch({
       aria-checked={checked}
       data-slot="switch"
       data-size={size}
-      data-state={checked ? "checked" : "unchecked"}
+      data-state={state}
       onClick={() => onCheckedChange(!checked)}
       className={cn(
-        "peer group/switch relative inline-flex shrink-0 items-center rounded-full border border-transparent transition-all outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50",
-        size === "default" ? "h-5 w-9" : "h-[14px] w-[24px]",
-        checked ? "bg-primary" : "bg-input dark:bg-input/80",
+        "peer group/switch relative inline-flex shrink-0 items-center rounded-full border border-transparent transition-all outline-none after:absolute after:-inset-x-3 after:-inset-y-2 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 data-[size=default]:h-5 data-[size=default]:w-9 data-[size=sm]:h-[14px] data-[size=sm]:w-[24px] dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 data-[state=checked]:bg-primary data-[state=unchecked]:bg-input dark:data-[state=unchecked]:bg-input/80 disabled:cursor-not-allowed disabled:opacity-50",
         className,
       )}
       {...props}
     >
       <span
         data-slot="switch-thumb"
-        className={cn(
-          "pointer-events-none block rounded-full bg-background shadow-xs ring-0 transition-transform",
-          size === "default" ? "size-4" : "size-2.5",
-          checked
-            ? size === "default"
-              ? "translate-x-[calc(100%+2px)]"
-              : "translate-x-[calc(100%+1px)]"
-            : "translate-x-0.5",
-        )}
+        data-state={state}
+        className="pointer-events-none block rounded-full bg-background ring-0 transition-transform group-data-[size=default]/switch:size-4 group-data-[size=sm]/switch:size-3 group-data-[size=default]/switch:data-[state=checked]:translate-x-[18px] group-data-[size=sm]/switch:data-[state=checked]:translate-x-[10px] dark:data-[state=checked]:bg-primary-foreground group-data-[size=default]/switch:data-[state=unchecked]:translate-x-0 group-data-[size=sm]/switch:data-[state=unchecked]:translate-x-0 dark:data-[state=unchecked]:bg-foreground"
       />
     </button>
   );

@@ -1,5 +1,6 @@
 import {
   body,
+  selectDocuments,
   fail,
   id,
   json,
@@ -9,6 +10,7 @@ import {
   type Doc,
   type WorkspaceContext,
 } from "./core";
+import { workspaceReadiness } from "./readiness";
 import { equal, sha256, token } from "./crypto";
 export function validateReport(report: unknown): Doc {
   if (!report || typeof report !== "object" || Array.isArray(report))
@@ -47,6 +49,34 @@ export function validateReport(report: unknown): Doc {
     !/^[a-zA-Z0-9.:[\]-]+:[0-9]{1,5}$/.test(r.wireguard_endpoint)
   )
     fail(400, "Invalid WireGuard endpoint");
+  if (r.apple != null) {
+    const a = r.apple;
+    if (
+      typeof a.enabled !== "boolean" ||
+      (a.xcode !== null && typeof a.xcode !== "string") ||
+      !Array.isArray(a.simulators) ||
+      a.simulators.length > 32 ||
+      a.simulators.some(
+        (s: Doc) =>
+          typeof s.id !== "string" ||
+          !/^[a-f0-9-]{36}$/i.test(s.id) ||
+          typeof s.name !== "string" ||
+          s.name.length > 128 ||
+          typeof s.runtime !== "string" ||
+          s.runtime.length > 128,
+      )
+    )
+      fail(400, "Invalid Apple capabilities");
+    r.apple = {
+      enabled: a.enabled,
+      xcode: a.xcode?.slice(0, 256) ?? null,
+      simulators: a.simulators.map((s: Doc) => ({
+        id: s.id,
+        name: s.name,
+        runtime: s.runtime,
+      })),
+    };
+  }
   return r;
 }
 function metadata(input: Doc): Doc {
@@ -121,6 +151,50 @@ function networkNode(ctx: WorkspaceContext, machine: Doc): Doc {
   ctx.store.put("network_nodes", node.id, node);
   return node;
 }
+export function assertMachineRemovable(
+  ctx: WorkspaceContext,
+  machine: Doc,
+): void {
+  if (
+    ctx.store
+      .list("apple_jobs")
+      .some(
+        (j) =>
+          j.machine_id === machine.id &&
+          ["queued", "running", "cancelling"].includes(j.status),
+      )
+  )
+    fail(409, "Stop active Apple jobs before removing this machine");
+  const owns = (collection: string) =>
+    ctx.store
+      .list(collection)
+      .some(
+        (r) =>
+          r.machine_id === machine.id || r.placement?.machine_id === machine.id,
+      );
+  if (["databases", "services", "retained_volumes"].some(owns))
+    fail(409, "Machine owns persistent workloads");
+  if (ctx.store.get("network_nodes", machine.id)?.is_server) {
+    if (
+      ctx.store.list("network_nodes").some((n) => n.id !== machine.id) ||
+      ctx.store
+        .list("machines")
+        .some((m) => m.id !== machine.id && m.report?.nomad) ||
+      ["services", "databases", "domains", "push_requests"].some(
+        (c) => ctx.store.list(c).length,
+      ) ||
+      ctx.store
+        .list("deployments")
+        .some((d) => ["queued", "building", "deploying"].includes(d.status))
+    )
+      fail(
+        409,
+        "Remove fleet peers and workloads before retiring the coordinator",
+      );
+    if (Date.now() - Date.parse(machine.last_seen) <= 60000)
+      fail(409, "Stop the empty fleet coordinator before removing it");
+  }
+}
 export async function handleFleet(
   request: Request,
   ctx: WorkspaceContext,
@@ -129,7 +203,15 @@ export async function handleFleet(
     method = request.method;
   if (path === "/api/enrollment-tokens" && method === "POST") {
     requireUser(ctx);
-    const data = metadata(await body(request));
+    const input = await body(request);
+    if (input.setup_intent !== undefined && input.setup_intent !== "runtime")
+      fail(400, "Unsupported machine setup intent");
+    const data = metadata({
+      location: "home",
+      tags: [],
+      roles: workspaceReadiness(ctx, true).recommended_roles,
+      ...input,
+    });
     if (
       ctx.store.list("machines").length >=
       Number(ctx.env.MAX_MACHINES_PER_WORKSPACE)
@@ -141,6 +223,7 @@ export async function handleFleet(
       enrollment = {
         id: id(),
         ...data,
+        setup_intent: input.setup_intent ?? null,
         token_hash: hash,
         expires_at: expires,
         used_at: null,
@@ -151,6 +234,7 @@ export async function handleFleet(
       .bind(hash, ctx.workspaceId, expires)
       .run();
     ctx.store.put("enrollments", hash, enrollment);
+    ctx.broadcast();
     return json(
       {
         ...data,
@@ -161,6 +245,34 @@ export async function handleFleet(
       201,
     );
   }
+  const revokeEnrollment = path.match(
+    /^\/api\/enrollment-tokens\/([a-f0-9-]{36})$/,
+  );
+  if (revokeEnrollment && method === "DELETE") {
+    requireUser(ctx);
+    const grant = ctx.store
+      .list("enrollments")
+      .find((e) => e.id === revokeEnrollment[1]);
+    if (!grant) fail(404, "Enrollment not found");
+    if (grant.used_at)
+      fail(
+        409,
+        "This command already connected a machine. Open Machines to manage it.",
+      );
+    // Revoke in the owning object before directory I/O; an already-routed request
+    // must fail too. The consumed/revoked check in enrollment's transaction closes races.
+    ctx.store.put("enrollments", grant.token_hash, {
+      ...grant,
+      revoked_at: now(),
+    });
+    ctx.broadcast();
+    await ctx.env.DIRECTORY.prepare(
+      "DELETE FROM enrollment_routes WHERE token_hash=? AND workspace_id=?",
+    )
+      .bind(grant.token_hash, ctx.workspaceId)
+      .run();
+    return json({ ok: true });
+  }
   if (path === "/api/agent/enroll" && method === "POST") {
     const input = await body(request),
       hash = await sha256(text(input.token, 256)),
@@ -169,7 +281,12 @@ export async function handleFleet(
       credentialHash = await sha256(credential);
     const machineId = id(),
       grant = ctx.store.get("enrollments", hash);
-    if (!grant || grant.used_at || grant.expires_at <= Date.now())
+    if (
+      !grant ||
+      grant.used_at ||
+      grant.revoked_at ||
+      grant.expires_at <= Date.now()
+    )
       fail(401, "Enrollment token expired or already used");
     // Publish routing before consuming the grant. Directory failures leave it reusable.
     await ctx.env.DIRECTORY.prepare(
@@ -181,7 +298,12 @@ export async function handleFleet(
     try {
       machine = ctx.store.transaction(() => {
         const current = ctx.store.get("enrollments", hash);
-        if (!current || current.used_at || current.expires_at <= Date.now())
+        if (
+          !current ||
+          current.used_at ||
+          current.revoked_at ||
+          current.expires_at <= Date.now()
+        )
           fail(401, "Enrollment token expired or already used");
         if (
           ctx.store.list("machines").length >=
@@ -193,13 +315,18 @@ export async function handleFleet(
           credential_hash: credentialHash,
           location: current.location,
           roles: current.roles,
+          setup_intent: current.setup_intent ?? null,
           tags: current.tags,
           report,
           last_seen: now(),
           created_at: now(),
         };
         ctx.store.put("machines", m.id, m);
-        ctx.store.put("enrollments", hash, { ...current, used_at: now() });
+        ctx.store.put("enrollments", hash, {
+          ...current,
+          used_at: now(),
+          machine_id: machineId,
+        });
         return m;
       });
     } catch (error) {
@@ -228,18 +355,27 @@ export async function handleFleet(
         report,
         last_seen: now(),
       });
-      const minute = Math.floor(Date.now() / 60000) * 60000,
-        sampleId = `${machineId}:${minute}`;
+      // One row per heartbeat (10 s buckets); pruned after six hours by the workspace alarm.
+      const bucket = Math.floor(Date.now() / 10000) * 10000,
+        sampleId = `${machineId}:${bucket}`;
       if (!ctx.store.get("samples", sampleId))
         ctx.store.put("samples", sampleId, {
           id: sampleId,
           machine_id: machineId,
-          sampled_at: new Date(minute).toISOString(),
+          sampled_at: new Date(bucket).toISOString(),
           cpu_percent: report.cpu_percent,
+          load_avg1:
+            typeof report.load_avg1 === "number" ? report.load_avg1 : null,
           memory_used: report.memory_used,
           memory_total: report.memory_total,
           disk_used: report.disk_used,
           disk_total: report.disk_total,
+          uptime_sec:
+            typeof report.uptime_sec === "number" ? report.uptime_sec : null,
+          cpu_cores: report.cpu_cores,
+          containers: ctx.store
+            .list("services")
+            .filter((s) => s.machine_id === machineId).length,
         });
       await ctx.schedule(60000);
       ctx.broadcast();
@@ -292,8 +428,10 @@ export async function handleFleet(
     }
     if (action === "commands" && method === "GET") {
       const commands = ctx.store.transaction(() =>
-        ctx.store
-          .list("commands")
+        selectDocuments(ctx.store, "commands", {
+          equal: { machine_id: machineId, completed_at: null },
+          after: { field: "expires_at", value: Date.now() },
+        })
           .filter(
             (c) =>
               c.machine_id === machineId &&
@@ -390,20 +528,21 @@ export async function handleFleet(
       return json({ ok: true });
     }
     if (method === "DELETE") {
-      if (
-        ctx.store.get("network_nodes", machine.id)?.is_server ||
-        ctx.store.list("databases").some((d) => d.machine_id === machine.id) ||
-        ctx.store.list("services").some((s) => s.machine_id === machine.id) ||
-        ctx.store
-          .list("retained_volumes")
-          .some((v) => v.machine_id === machine.id)
-      )
-        fail(409, "Machine owns fleet coordination or persistent workloads");
+      assertMachineRemovable(ctx, machine);
       await ctx.env.DIRECTORY.prepare(
         "DELETE FROM machine_routes WHERE id=? AND workspace_id=?",
       )
         .bind(machine.id, ctx.workspaceId)
         .run();
+      if (ctx.store.get("network_nodes", machine.id)?.is_server) {
+        const runtime = ctx.store.get("settings", "runtime");
+        if (runtime)
+          ctx.store.put("retired_runtimes", machine.id, {
+            ...runtime,
+            retired_at: now(),
+          });
+        ctx.store.delete("settings", "runtime");
+      }
       ctx.store.delete("machines", machine.id);
       ctx.store.delete("network_nodes", machine.id);
       ctx.broadcast();
@@ -412,19 +551,56 @@ export async function handleFleet(
   }
   if (path === "/api/fleet/history" && method === "GET") {
     requireUser(ctx);
+    // Last hour of vitals per machine, oldest first; same `hosts[].samples[]` contract as the
+    // self-hosted API: silent for 45 s → unreachable, no samples yet → pending.
     const since = new Date(Date.now() - 3600000).toISOString(),
-      machines: Record<string, Doc[]> = {};
-    for (const s of ctx.store
-      .list("samples")
-      .filter((s) => s.sampled_at >= since)
-      .sort((a, b) => a.sampled_at.localeCompare(b.sampled_at)))
-      (machines[s.machine_id] ??= []).push({
-        at: s.sampled_at,
-        cpu: s.cpu_percent,
-        mem: s.memory_used,
-        disk: s.disk_used,
+      samples: Record<string, Doc[]> = {};
+    for (const s of selectDocuments(ctx.store, "samples", {
+      after: { field: "sampled_at", value: since },
+    }).sort((a, b) => a.sampled_at.localeCompare(b.sampled_at)))
+      (samples[s.machine_id] ??= []).push({
+        t: Date.parse(s.sampled_at),
+        cpuPercent: s.cpu_percent,
+        loadAvg1: s.load_avg1 ?? null,
+        memUsedBytes: s.memory_used,
+        memTotalBytes: s.memory_total,
+        diskUsedBytes: s.disk_used,
+        diskTotalBytes: s.disk_total,
+        uptimeSec: s.uptime_sec ?? null,
+        cpuCount: s.cpu_cores ?? s.cpu_count ?? 1,
+        containerCount: s.containers ?? 0,
       });
-    return json({ since, step_seconds: 60, machines });
+    const hosts = ctx.store
+      .list("machines")
+      .sort((a, b) => a.created_at.localeCompare(b.created_at))
+      .map((m) => {
+        const own = samples[m.id] ?? [],
+          latest = own[own.length - 1] ?? null,
+          silent = Math.floor((Date.now() - Date.parse(m.last_seen)) / 1000),
+          status = silent > 45 ? "unreachable" : latest ? "ok" : "pending";
+        return {
+          hostKey: m.id,
+          serverId: m.id,
+          name: m.report.hostname ?? m.id,
+          aliases: [],
+          ipAddress: m.report.private_ip ?? null,
+          status,
+          error:
+            status === "unreachable"
+              ? `no heartbeat for ${humanDuration(silent)}`
+              : null,
+          latest: status === "ok" ? latest : null,
+          samples: own,
+        };
+      });
+    return json({ pollMs: 10000, maxSamples: 360, hosts });
   }
   return null;
+}
+function humanDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400)
+    return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+  return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h`;
 }

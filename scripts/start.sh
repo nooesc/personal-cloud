@@ -43,4 +43,4 @@ else
   fi
 fi
 "${compose[@]}" up --no-build --pull never --detach --wait "$@"
-printf '\nPersonal Cloud is running. Open PC_PUBLIC_URL from %s.\nBack up this file together with your PostgreSQL database; encrypted credentials require the original PC_SECRET_KEY.\n' "$env_file"
+printf '\ndinghy is running. Open PC_PUBLIC_URL from %s.\nBack up this file together with your PostgreSQL database; encrypted credentials require the original PC_SECRET_KEY.\n' "$env_file"

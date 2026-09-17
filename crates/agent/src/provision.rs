@@ -46,15 +46,17 @@ pub fn secure_write(path: &Path, bytes: &[u8]) -> Result<()> {
 pub fn prepare(rotate: bool) -> Result<()> {
     ensure!(
         std::env::consts::OS == "linux",
-        "Provisioning requires Ubuntu 22.04/24.04 or Debian 12/13. On macOS use the documented Linux VM path."
+        "Provisioning requires Ubuntu 22.04/24.04, Debian 12/13, Fedora/Asahi 44, Arch, or Omarchy 4. On macOS use the documented Linux VM path."
     );
     ensure!(
         run("id", &["-u"])? == "0",
         "Run explicit provisioning as root"
     );
-    run("sh", &["-c", ". /etc/os-release; case \"$ID:$VERSION_ID\" in ubuntu:22.04|ubuntu:24.04|debian:12|debian:13) exit 0;; *) exit 1;; esac"])
-        .context("Use supported Ubuntu 22.04/24.04 or Debian 12/13")?;
-    let missing = ["docker", "nomad", "wg", "ip", "systemctl"]
+    ensure!(
+        supported_os(&fs::read_to_string("/etc/os-release")?),
+        "Use supported Ubuntu 22.04/24.04, Debian 12/13, Fedora/Asahi 44, Arch, or Omarchy 4"
+    );
+    let missing = ["docker", "nomad", "wg", "ip", "iptables", "systemctl"]
         .iter()
         .any(|executable| {
             Command::new("sh")
@@ -74,12 +76,17 @@ pub fn prepare(rotate: bool) -> Result<()> {
             "Linux runtime installation failed"
         );
     }
-    let unit = b"[Unit]\nDescription=Personal Cloud Nomad runtime\nWants=network-online.target\nAfter=network-online.target docker.service\nRequires=docker.service\n[Service]\nExecStart=/usr/local/bin/nomad agent -config=/etc/nomad.d/personal-cloud.json\nRestart=on-failure\nRestartSec=5\nKillMode=process\nLimitNOFILE=65536\n[Install]\nWantedBy=multi-user.target\n";
+    let unit = b"[Unit]\nDescription=dinghy Nomad runtime\nWants=network-online.target\nAfter=network-online.target docker.service\nRequires=docker.service\n[Service]\nExecStart=/usr/local/bin/nomad agent -config=/etc/nomad.d/personal-cloud.json\nRestart=on-failure\nRestartSec=5\nKillMode=process\nLimitNOFILE=65536\n[Install]\nWantedBy=multi-user.target\n";
     let nomad_binary = run("sh", &["-c", "command -v nomad"])?;
     ensure!(
         matches!(
             nomad_binary.as_str(),
-            "/usr/local/bin/nomad" | "/usr/bin/nomad" | "/bin/nomad"
+            "/usr/local/bin/nomad"
+                | "/usr/local/sbin/nomad"
+                | "/usr/bin/nomad"
+                | "/usr/sbin/nomad"
+                | "/bin/nomad"
+                | "/sbin/nomad"
         ),
         "Install Nomad in a standard system binary directory"
     );
@@ -116,9 +123,10 @@ pub fn token() -> Option<String> {
     fs::read_to_string(Path::new(ROOT).join("nomad.token")).ok()
 }
 pub fn node_id() -> Option<String> {
-    fs::read_to_string("/opt/nomad/client/client-id")
-        .ok()
-        .map(|s| s.trim().to_owned())
+    let path = std::env::var_os("PC_NOMAD_DATA_DIR")
+        .map(|p| Path::new(&p).join("client/client-id"))
+        .unwrap_or_else(|| Path::new("/opt/nomad/client/client-id").to_path_buf());
+    fs::read_to_string(path).ok().map(|s| s.trim().to_owned())
 }
 fn key_valid(s: &str) -> bool {
     s.len() == 44
@@ -288,7 +296,28 @@ pub async fn apply(client: &reqwest::Client, config: &Value) -> Result<bool> {
     if !registries.contains(&json!("10.77.0.0/16")) {
         registries.push(json!("10.77.0.0/16"));
         secure_write(&daemon_path, &serde_json::to_vec_pretty(&daemon)?)?;
-        run("systemctl", &["restart", "docker"])?;
+    }
+    // Reload registry settings without restarting other applications or Swarm.
+    // Check live state even on retries: writing daemon.json alone is not success.
+    if !docker_has_fleet_registry()? {
+        run(
+            "dockerd",
+            &["--validate", "--config-file=/etc/docker/daemon.json"],
+        )?;
+        run(
+            "systemctl",
+            &["kill", "--kill-whom=main", "--signal=HUP", "docker.service"],
+        )?;
+        for _ in 0..20 {
+            if docker_has_fleet_registry()? {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        ensure!(
+            docker_has_fleet_registry()?,
+            "Docker did not reload the private fleet registry; existing workloads were not restarted"
+        );
     }
     if changed {
         run(
@@ -531,4 +560,67 @@ async fn docker_network(allocation: &str) -> Result<Value> {
         );
     }
     Ok(json!({"rx_bytes":rx,"tx_bytes":tx,"restarts":restarts,"observed_at":observed_at}))
+}
+
+fn supported_os(release: &str) -> bool {
+    let value = |key: &str| {
+        release
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once('=')?;
+                (name == key).then(|| value.trim_matches(['"', '\'']))
+            })
+            .unwrap_or("")
+    };
+    value("ID") == "arch"
+        || (value("ID") == "omarchy" && value("VERSION_ID").starts_with("4."))
+        || matches!(
+            (value("ID"), value("VERSION_ID")),
+            ("ubuntu", "22.04" | "24.04")
+                | ("debian", "12" | "13")
+                | ("fedora" | "fedora-asahi-remix", "44")
+        )
+}
+
+fn docker_has_fleet_registry() -> Result<bool> {
+    let cidrs: Vec<String> = serde_json::from_str(&run(
+        "docker",
+        &[
+            "info",
+            "--format",
+            "{{json .RegistryConfig.InsecureRegistryCIDRs}}",
+        ],
+    )?)?;
+    Ok(cidrs.iter().any(|cidr| cidr == "10.77.0.0/16"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::supported_os;
+    #[test]
+    fn exact_supported_distributions_only() {
+        for os in [
+            "ID=arch",
+            "ID=omarchy\nVERSION_ID=4.0.2\nID_LIKE=arch",
+            "ID=ubuntu\nVERSION_ID=22.04",
+            "ID=ubuntu\nVERSION_ID=24.04",
+            "ID=debian\nVERSION_ID=12",
+            "ID=debian\nVERSION_ID=13",
+            "ID=fedora\nVERSION_ID=44",
+            "ID=fedora-asahi-remix\nVERSION_ID=\"44\"\nID_LIKE=fedora",
+        ] {
+            assert!(supported_os(os), "{os}");
+        }
+        for os in [
+            "ID=unknown\nID_LIKE=arch",
+            "ID=omarchy\nVERSION_ID=3.0",
+            "ID=unknown\nID_LIKE=fedora\nVERSION_ID=44",
+            "ID=fedora\nVERSION_ID=40",
+            "ID=ubuntu\nVERSION_ID=20.04",
+            "ID=fedora",
+            "",
+        ] {
+            assert!(!supported_os(os), "{os}");
+        }
+    }
 }

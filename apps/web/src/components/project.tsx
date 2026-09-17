@@ -1,26 +1,46 @@
+import { AppleJobs } from "./apple-jobs";
 import { useEffect, useState } from "react";
 import {
   ArrowUpRight,
   Box,
+  Cloud,
+  ExternalLink,
   GitBranch,
+  GitFork,
   Plus,
   Rocket,
   Trash2,
   X,
 } from "lucide-react";
-import { api, type Deployment, type Project, type Service } from "../lib/data";
+import {
+  ApiError,
+  api,
+  type Deployment,
+  type Project,
+  type Readiness,
+  type Service,
+  type Snapshot,
+} from "../lib/data";
 import { cn } from "../lib/utils";
 import {
   Feedback,
   Field,
   Secret,
-  ServiceFields,
   Submit,
-  serviceFields,
   useAction,
   type LiveProps,
 } from "./live";
-import { Databases, Domains } from "./resources";
+import { ReadinessSummary } from "./readiness";
+import {
+  LinkRepository,
+  ProjectResources,
+  environmentsOf,
+  imported,
+  projectResources,
+} from "./project-resources";
+import { Domains, HostnameField } from "./resources";
+import { Databases } from "./databases";
+import { ServiceFields, serviceFields, slug } from "./service-fields";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -49,6 +69,10 @@ function statusVariant(status?: string) {
       return "blank" as const;
   }
 }
+/** `not_deployed` → "not deployed"; the badge capitalises. */
+function statusLabel(status?: string) {
+  return (status ?? "not deployed").replaceAll("_", " ");
+}
 function ago(iso: string) {
   const seconds = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
   if (seconds < 60) return "just now";
@@ -57,166 +81,200 @@ function ago(iso: string) {
   return `${Math.floor(seconds / 86400)}d ago`;
 }
 
-export function ProjectDetail({
+export const PROJECT_TABS = ["services", "cloudflare", "environment", "databases", "domains", "apple"] as const;
+export type ProjectTab = (typeof PROJECT_TABS)[number];
+const TAB_LABEL: Record<ProjectTab, string> = {
+  apple: "Apple jobs",
+  services: "Services",
+  cloudflare: "Cloudflare",
+  environment: "Environment",
+  databases: "Databases",
+  domains: "Domains",
+};
+
+/** Which tabs a project offers; Cloudflare only where resources can be organized. */
+export function projectTabs(project: Project, data: Snapshot): ProjectTab[] {
+  const organized = Boolean(data.capabilities?.project_organization);
+  const withCloudflare =
+    organized && (projectResources(data, project.id).length || imported(project));
+  const tabs: ProjectTab[] = withCloudflare
+    ? ["services", "cloudflare", "environment", "databases", "domains"]
+    : ["services", "environment", "databases", "domains"];
+  if (data.capabilities?.apple_jobs) tabs.push("apple");
+  return tabs;
+}
+
+/**
+ * The project's sections. Tab and open service are owned by the caller so
+ * they can live in the URL; the page above supplies identity and actions.
+ */
+export function ProjectTabs({
   project,
   data,
   refresh,
   live,
+  tab,
+  onTab,
+  serviceId,
+  onService,
   addService,
-  onRemove,
+  onLinkRepository,
+  onOrganize,
+  onOpenDatabase,
 }: {
   project: Project;
+  tab: ProjectTab;
+  onTab: (tab: ProjectTab) => void;
+  serviceId?: string;
+  onService: (id: string | undefined) => void;
   addService: () => void;
-  onRemove: () => void;
+  onLinkRepository: () => void;
+  /** Opens the Cloudflare organize flow (hosted control planes only). */
+  onOrganize?: () => void;
+  onOpenDatabase: (id: string) => void;
 } & LiveProps) {
-  const [tab, setTab] = useState("Services"),
-    [serviceId, setServiceId] = useState<string>(),
-    action = useAction();
+  const resources = projectResources(data, project.id),
+    noRepo = imported(project);
   const services = data.services.filter((s) => s.project_id === project.id),
     service = services.find((s) => s.id === serviceId);
+  const tabs = projectTabs(project, data);
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex min-w-0 flex-wrap items-center gap-3">
-          <a
-            href={
-              /^https?:\/\//.test(project.repository)
-                ? project.repository
-                : `https://github.com/${project.repository}`
-            }
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex min-w-0 items-center gap-1 font-mono text-[11px] text-muted-foreground tabular-nums hover:text-foreground"
-          >
-            <span className="truncate">{project.repository}</span>
-            <ArrowUpRight className="size-3 shrink-0" />
-          </a>
-          <Badge variant="outline">
-            <GitBranch />
-            {project.branch}
-          </Badge>
-          <Meta>
-            Created {new Date(project.created_at).toLocaleDateString()}
-          </Meta>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Button size="sm" onClick={addService}>
-            <Plus />
-            Add service
-          </Button>
-          <Button
-            variant="destructive"
-            size="sm"
-            disabled={!live || action.busy}
-            onClick={() => {
-              if (
-                confirm(
-                  `Delete project ${project.name} and stop its services? Database volumes are preserved.`,
-                )
-              )
-                void action.run(async () => {
-                  await api(`/projects/${project.id}`, undefined, "DELETE");
-                  await refresh();
-                  onRemove();
-                }, "Project deleted");
-            }}
-          >
-            <Trash2 />
-            Remove
-          </Button>
-        </div>
-      </div>
-      <Feedback action={action} />
-      {!live && (
-        <Alert>
-          This is sample data. Connect your live workspace to run deployments
-          and change infrastructure.
-        </Alert>
-      )}
-      <Tabs
-        value={tab}
-        onValueChange={(next) => {
-          setTab(next);
-          setServiceId(undefined);
-        }}
-        className="gap-4"
+    <Tabs
+      value={tab}
+      // Changing section also closes the open service; the caller owns both.
+      onValueChange={(next) => onTab(next as ProjectTab)}
+      className="gap-4"
+    >
+      <TabsList
+        variant="line"
+        aria-label="Project sections"
+        className="w-full justify-start overflow-x-auto border-b border-border"
       >
-        <TabsList
-          variant="line"
-          aria-label="Project sections"
-          className="w-full justify-start overflow-x-auto border-b border-border"
-        >
-          {["Services", "Environment", "Databases", "Domains"].map((t) => (
-            <TabsTrigger key={t} value={t} className="flex-none">
-              {t}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-        <TabsContent value="Services" className="flex flex-col gap-6">
-          {services.length ? (
-            <div className="grid gap-3 sm:grid-cols-2">
-              {services.map((s) => (
-                <ServiceCard
-                  key={s.id}
-                  service={s}
-                  host={
-                    data.machines.find(
-                      (m) => m.id === (s.machine_id ?? s.demo_machine),
-                    )?.report.hostname ?? s.placement.kind
-                  }
-                  selected={s.id === serviceId}
-                  onSelect={() =>
-                    setServiceId(s.id === serviceId ? undefined : s.id)
-                  }
-                />
-              ))}
-            </div>
-          ) : (
-            <EmptyState
-              icon={<Box />}
-              title={`Add the first service to ${project.name}`}
-              description="We build from your repository and run it on your fleet."
-              action={
-                <Button size="sm" variant="outline" onClick={addService}>
-                  <Plus />
-                  Add service
-                </Button>
-              }
-            />
-          )}
-          {service && (
-            <ServiceDetail
-              key={service.id}
-              service={service}
-              data={data}
-              refresh={refresh}
-              live={live}
-              onClose={() => setServiceId(undefined)}
-              onRemove={() => setServiceId(undefined)}
-            />
-          )}
-        </TabsContent>
-        <TabsContent value="Environment">
-          <Environment project={project} live={live} />
-        </TabsContent>
-        <TabsContent value="Databases">
-          <Databases
+        {tabs.map((t) => (
+          <TabsTrigger key={t} value={t} className="flex-none">
+            {TAB_LABEL[t]}
+            {t === "cloudflare" && resources.length > 0 && (
+              <Meta className="ml-1">{resources.length}</Meta>
+            )}
+            {t === "services" && services.length > 0 && (
+              <Meta className="ml-1">{services.length}</Meta>
+            )}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+      <TabsContent value="services" className="flex flex-col gap-6">
+        {services.length ? (
+          <div className="grid gap-3 sm:grid-cols-2">
+            {services.map((s) => (
+              <ServiceCard
+                key={s.id}
+                service={s}
+                host={
+                  data.machines.find((m) => m.id === s.machine_id)?.report.hostname ??
+                  s.placement.kind
+                }
+                selected={s.id === serviceId}
+                onSelect={() => onService(s.id === serviceId ? undefined : s.id)}
+              />
+            ))}
+          </div>
+        ) : noRepo ? (
+          <EmptyState
+            icon={<Box />}
+            title="Runs on Cloudflare as it is"
+            description="Link a repository whenever you want to build and run services on your machines. Nothing is required."
+            action={
+              <Button size="sm" variant="outline" onClick={onLinkRepository}>
+                <GitFork />
+                Link repository
+              </Button>
+            }
+          />
+        ) : (
+          <EmptyState
+            icon={<Box />}
+            title={`Add the first service to ${project.name}`}
+            description="We build from your repository and run it on your machines."
+            action={
+              <Button size="sm" variant="outline" onClick={addService}>
+                <Plus />
+                Add service
+              </Button>
+            }
+          />
+        )}
+        {service && (
+          <ServiceDetail
+            key={service.id}
+            service={service}
             data={data}
             refresh={refresh}
             live={live}
-            projectId={project.id}
+            onClose={() => onService(undefined)}
+            onRemove={() => onService(undefined)}
           />
+        )}
+      </TabsContent>
+      {tabs.includes("cloudflare") && (
+        <TabsContent value="cloudflare">
+          <ProjectResources project={project} data={data} onOrganize={onOrganize} />
         </TabsContent>
-        <TabsContent value="Domains">
-          <Domains
-            data={data}
-            refresh={refresh}
-            live={live}
-            projectId={project.id}
-          />
-        </TabsContent>
-      </Tabs>
-    </div>
+      )}
+      {tabs.includes("apple") && <TabsContent value="apple"><AppleJobs project={project} data={data} /></TabsContent>}
+      <TabsContent value="environment">
+        <Environment project={project} live={live} />
+      </TabsContent>
+      <TabsContent value="databases">
+        <Databases data={data} refresh={refresh} live={live} projectId={project.id} onOpen={onOpenDatabase} />
+      </TabsContent>
+      <TabsContent value="domains">
+        <Domains data={data} refresh={refresh} live={live} projectId={project.id} />
+      </TabsContent>
+    </Tabs>
+  );
+}
+
+/** Deletes the project after confirmation; the caller leaves the page. */
+export function RemoveProject({
+  project,
+  live,
+  refresh,
+  onRemoved,
+  className,
+}: {
+  project: Project;
+  onRemoved: () => void;
+  className?: string;
+} & LiveProps) {
+  const action = useAction(),
+    noRepo = imported(project);
+  return (
+    <>
+      <Button
+        variant="ghost"
+        size="sm"
+        className={cn("text-muted-foreground hover:text-destructive", className)}
+        disabled={!live || action.busy}
+        onClick={() => {
+          if (
+            confirm(
+              noRepo
+                ? `Remove project ${project.name}? Its Cloudflare resources stay untouched and become unassigned.`
+                : `Delete project ${project.name} and stop its services? Database volumes are preserved.`,
+            )
+          )
+            void action.run(async () => {
+              await api(`/projects/${project.id}`, undefined, "DELETE");
+              await refresh();
+              onRemoved();
+            }, "Project deleted");
+        }}
+      >
+        <Trash2 />
+        Remove
+      </Button>
+      <Feedback action={action} />
+    </>
   );
 }
 
@@ -231,7 +289,7 @@ function ServiceCard({
   selected: boolean;
   onSelect: () => void;
 }) {
-  const status = s.status ?? s.demo_status;
+  const status = s.status;
   return (
     <div
       className={cn(
@@ -250,7 +308,7 @@ function ServiceCard({
         <StatusDot status={status} />
         <span className="truncate text-[15px] font-medium">{s.name}</span>
         <Badge variant={statusVariant(status)} className="ml-auto capitalize">
-          {status ?? "Not deployed"}
+          {statusLabel(status)}
         </Badge>
       </div>
       <Meta className="truncate">
@@ -438,6 +496,10 @@ function ServiceDetail({
     [metrics, setMetrics] = useState<Record<string, unknown>>({}),
     [readError, setReadError] = useState(""),
     [loading, setLoading] = useState(false),
+    [preflight, setPreflight] = useState<Readiness>(),
+    [launching, setLaunching] = useState(false),
+    [launchError, setLaunchError] = useState(""),
+    [publishing, setPublishing] = useState(false),
     action = useAction();
   const deployments = data.deployments
       .filter((d) => d.service_id === s.id)
@@ -446,8 +508,40 @@ function ServiceDetail({
     deploying = deployments.some((d) =>
       ["queued", "building", "deploying"].includes(d.status),
     ),
-    status = s.status ?? s.demo_status,
-    host = data.machines.find((m) => m.id === s.machine_id)?.report.hostname;
+    status = s.status,
+    host = data.machines.find((m) => m.id === s.machine_id)?.report.hostname,
+    domain = data.domains.find((d) => d.service_id === s.id),
+    canPublish = status === "healthy" || status === "running",
+    project = data.projects.find((p) => p.id === s.project_id);
+  /**
+   * Readiness comes only from the control plane: preflight first, and the
+   * deploy gate's own answer if it disagrees by the time we ask. Control
+   * planes that publish no readiness (legacy self-hosted) have no preflight
+   * endpoint; their POST deploy performs the authoritative runtime checks.
+   */
+  async function launch() {
+    setLaunching(true);
+    setLaunchError("");
+    setPreflight(undefined);
+    try {
+      if (data.readiness) {
+        const check = await api<Readiness>(`/services/${s.id}/preflight`);
+        if (check.status !== "ready") {
+          setPreflight(check);
+          return;
+        }
+      }
+      await api<Deployment>(`/services/${s.id}/deploy`, {});
+      setSelected(undefined);
+      setTab("Deployments");
+      await refresh();
+    } catch (e) {
+      if (e instanceof ApiError && e.readiness) setPreflight(e.readiness);
+      else setLaunchError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLaunching(false);
+    }
+  }
   useEffect(() => {
     if (!live || tab !== "Logs") return;
     let ended = false,
@@ -530,11 +624,21 @@ function ServiceDetail({
             <StatusDot status={status} />
             <span className="truncate text-[15px] font-medium">{s.name}</span>
             <Badge variant={statusVariant(status)} className="capitalize">
-              {status ?? "Not deployed"}
+              {statusLabel(status)}
             </Badge>
           </div>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            {s.address ? (
+            {domain ? (
+              <a
+                href={`https://${domain.hostname}`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 font-mono text-[11px] text-muted-foreground tabular-nums hover:text-foreground"
+              >
+                {domain.hostname}
+                <ExternalLink className="size-3" />
+              </a>
+            ) : s.address ? (
               <a
                 href={s.address}
                 target="_blank"
@@ -545,32 +649,40 @@ function ServiceDetail({
                 <ArrowUpRight className="size-3" />
               </a>
             ) : (
-              <Meta>No running address</Meta>
+              <Meta>Not running</Meta>
             )}
             <Meta>:{s.port}</Meta>
-            <Meta>{host ?? "Awaiting placement"}</Meta>
-            <Meta className="truncate" title={s.image_digest}>
-              {s.image_digest
-                ? `${s.image_digest.slice(0, 34)}…`
-                : "No image deployed"}
-            </Meta>
+            <Meta>{host ?? "No machine yet"}</Meta>
+            {!domain && (
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={!live || !canPublish}
+                title={canPublish ? undefined : "Deploy a healthy version first"}
+                onClick={() => setPublishing(!publishing)}
+              >
+                {publishing ? <X /> : <Plus />}
+                {publishing ? "Cancel" : "Add public address"}
+              </Button>
+            )}
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <Button
             size="sm"
             disabled={!live || action.busy || deploying}
-            onClick={() =>
-              action.run(async () => {
-                await api<Deployment>(`/services/${s.id}/deploy`, {});
-                setSelected(undefined);
-                setTab("Deployments");
-                await refresh();
-              }, "Deployment queued")
-            }
+            isLoading={launching}
+            title={deploying ? "A deployment is already running" : undefined}
+            onClick={launch}
           >
-            <Rocket />
-            Deploy latest
+            {launching ? (
+              data.readiness ? "Checking…" : "Deploying…"
+            ) : (
+              <>
+                <Rocket />
+                Deploy
+              </>
+            )}
           </Button>
           <Button
             size="icon-sm"
@@ -582,6 +694,36 @@ function ServiceDetail({
           </Button>
         </div>
       </div>
+      {launchError && <Alert variant="destructive">{launchError}</Alert>}
+      {preflight && (
+        <ReadinessSummary
+          readiness={preflight}
+          className="rounded-lg border border-border p-3"
+        />
+      )}
+      {publishing && !domain && (
+        <form
+          className="flex flex-col gap-4 rounded-lg border border-border p-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const form = new FormData(e.currentTarget);
+            void action.run(async () => {
+              await api("/domains", {
+                service_id: s.id,
+                hostname: form.get("hostname"),
+              });
+              await refresh();
+              setPublishing(false);
+            }, "Public address requested");
+          }}
+        >
+          <HostnameField
+            data={data}
+            defaultLabel={slug(project?.name ?? s.name)}
+          />
+          <Submit busy={action.busy || !live}>Add public address</Submit>
+        </form>
+      )}
       <Feedback action={action} />
       <Tabs value={tab} onValueChange={setTab} className="gap-4">
         <TabsList
@@ -607,7 +749,7 @@ function ServiceDetail({
               }, "Configuration saved. Deploy to apply changes.");
             }}
           >
-            <ServiceFields data={data} service={s} />
+            <ServiceFields data={data} service={s} mode="edit" />
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
               <Submit busy={action.busy || !live}>Save configuration</Submit>
               <Button
@@ -644,7 +786,7 @@ function ServiceDetail({
                   variant={statusVariant(deployment.status)}
                   className="capitalize"
                 >
-                  {deployment.status.replaceAll("_", " ")}
+                  {statusLabel(deployment.status)}
                 </Badge>
                 <Meta className="ml-auto">
                   {deployment.step?.replaceAll("_", " ")}
@@ -676,7 +818,7 @@ function ServiceDetail({
                       variant={statusVariant(d.status)}
                       className="capitalize"
                     >
-                      {d.status.replaceAll("_", " ")}
+                      {statusLabel(d.status)}
                     </Badge>
                     <Meta title={new Date(d.created_at).toLocaleString()}>
                       {ago(d.created_at)}
@@ -704,15 +846,11 @@ function ServiceDetail({
                         : !["healthy", "rolled_back"].includes(d.status)
                           ? "Only a previously healthy deployment can be restored"
                           : !d.image_digest
-                            ? "This deployment has no immutable image"
+                            ? "This deployment has no reusable image"
                             : "Deploy this exact image without rebuilding"
                     }
                     onClick={() => {
-                      if (
-                        confirm(
-                          "Roll back to this deployment’s immutable image?",
-                        )
-                      )
+                      if (confirm("Roll back to this deployment?"))
                         void action.run(async () => {
                           await api<Deployment>(`/services/${s.id}/rollback`, {
                             deployment_id: d.id,
@@ -732,13 +870,13 @@ function ServiceDetail({
             <EmptyState
               icon={<Rocket />}
               title="No deployments yet"
-              description="Deploy latest builds your production branch and starts the service."
+              description="Deploy builds your production branch and starts the service."
               className="py-10"
             />
           )}
           {readError && <Alert variant="destructive">{readError}</Alert>}
           <details className="group">
-            <summary className={summaryClasses}>Deploy an existing image</summary>
+            <summary className={summaryClasses}>Deploy a specific image</summary>
             <form
               className="mt-3 flex flex-col gap-4"
               onSubmit={(e) => {
@@ -753,7 +891,10 @@ function ServiceDetail({
                 }, "Image deployment queued");
               }}
             >
-              <Field label="Immutable image digest">
+              <Field
+                label="Image reference"
+                hint="An exact image with its sha256 digest."
+              >
                 <Input
                   name="image"
                   required
@@ -783,9 +924,7 @@ function ServiceDetail({
           </pre>
           {Object.keys(metrics).length > 0 && (
             <details>
-              <summary className={summaryClasses}>
-                Allocation resource details
-              </summary>
+              <summary className={summaryClasses}>Raw runtime metrics</summary>
               <pre className={cn(logClasses, "mt-3")}>
                 {JSON.stringify(metrics, null, 2)}
               </pre>

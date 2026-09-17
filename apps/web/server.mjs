@@ -156,7 +156,7 @@ server.on("upgrade", (req, socket, head) => {
   proxy.end();
 });
 server.listen(port, host, () =>
-  console.log(`Personal Cloud web listening on ${host}:${port}`),
+  console.log(`dinghy web listening on ${host}:${port}`),
 );
 for (const signal of ["SIGTERM", "SIGINT"])
   process.on(signal, () => {

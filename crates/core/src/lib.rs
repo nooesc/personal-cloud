@@ -4,6 +4,8 @@ use serde_json::{Value, json};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MachineReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apple: Option<Value>,
     pub hostname: String,
     pub os: String,
     pub architecture: String,
@@ -27,6 +29,11 @@ pub struct MachineReport {
     pub gpu: Vec<String>,
     #[serde(default)]
     pub network: Vec<String>,
+    /// One-minute load average; absent from agents that predate it.
+    #[serde(default)]
+    pub load_avg1: Option<f32>,
+    #[serde(default)]
+    pub uptime_sec: Option<u64>,
 }
 impl MachineReport {
     pub fn validate(&self) -> Result<()> {
