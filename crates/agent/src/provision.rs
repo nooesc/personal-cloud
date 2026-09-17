@@ -76,6 +76,10 @@ pub fn prepare(rotate: bool) -> Result<()> {
             "Linux runtime installation failed"
         );
     }
+    // A present Docker executable does not imply its daemon is running.
+    // enable --now starts a stopped daemon without restarting existing workloads.
+    run("systemctl", &["enable", "--now", "docker"])?;
+    run("docker", &["info"])?;
     let unit = b"[Unit]\nDescription=dinghy Nomad runtime\nWants=network-online.target\nAfter=network-online.target docker.service\nRequires=docker.service\n[Service]\nExecStart=/usr/local/bin/nomad agent -config=/etc/nomad.d/personal-cloud.json\nRestart=on-failure\nRestartSec=5\nKillMode=process\nLimitNOFILE=65536\n[Install]\nWantedBy=multi-user.target\n";
     let nomad_binary = run("sh", &["-c", "command -v nomad"])?;
     ensure!(

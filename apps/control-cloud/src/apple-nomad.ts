@@ -91,6 +91,7 @@ export async function reconcileAppleJobs(ctx: WorkspaceContext) {
         ctx.store.put("apple_jobs", original.id, {
           ...current,
           status: "cancelled",
+          reconcile_error: undefined,
           finished_at: now(),
         });
         continue;
@@ -99,6 +100,11 @@ export async function reconcileAppleJobs(ctx: WorkspaceContext) {
         await ensureJob(ctx, original.nomad_spec);
       }
       const list = await allocations(ctx, original.nomad_job_id);
+      const observed = ctx.store.get("apple_jobs", original.id);
+      if (observed?.reconcile_error) {
+        const { reconcile_error, ...recovered } = observed;
+        ctx.store.put("apple_jobs", original.id, recovered);
+      }
       const alloc = list[0];
       if (!alloc) continue;
       const current = ctx.store.get("apple_jobs", original.id)!;
@@ -132,8 +138,21 @@ export async function reconcileAppleJobs(ctx: WorkspaceContext) {
           started_at: current.started_at ?? now(),
         });
     } catch (e) {
-      if (!pending(e))
-        console.error("Apple Nomad reconciliation pending", original.id);
+      if (pending(e)) continue;
+      const current = ctx.store.get("apple_jobs", original.id);
+      if (
+        !current ||
+        !["queued", "running", "cancelling"].includes(current.status)
+      )
+        continue;
+      // Keep ownership until the scheduler confirms completion/cancellation.
+      // Access errors must not make possibly running native work look stopped.
+      ctx.store.put("apple_jobs", original.id, {
+        ...current,
+        reconcile_error:
+          "Scheduler could not confirm this Apple job. Check scheduler access and Mac runtime configuration; reconciliation will retry. The job may still be running.",
+      });
+      ctx.broadcast();
     }
   }
 }

@@ -12,9 +12,10 @@ test("Apple Nomad jobs use real SQLite/R2, validate allocations, observe complet
   const entry = `import {DurableObject} from 'cloudflare:workers'; import {SqlStore} from './src/store'; import {handleAppleJobs} from './src/apple-jobs'; import {reconcileAppleJobs} from './src/apple-nomad'; import {sha256} from './src/crypto';
 const node={ID:'node',Datacenter:'dc1',Status:'ready',SchedulingEligibility:'eligible',Attributes:{'kernel.name':'darwin'},Drivers:{raw_exec:{Healthy:true}},Meta:{pc_machine_id:'m',pc_apple:'true',pc_apple_agent:'/agent',pc_apple_state:'/state',pc_apple_work:'/work'}};
 export class TestWorkspace extends DurableObject {constructor(s,e){super(s,e);this.store=new SqlStore(s.storage)} async fetch(r){const w=r.headers.get('workspace'),s=this.store,path=new URL(r.url).pathname;
-const requestNomad=async(method,p,payload)=>{if(p==='/v1/nodes')return [{ID:'node'}];if(p==='/v1/node/node')return node;if(p==='/v1/jobs'){s.put('nomad',payload.Job.ID,payload.Job);return {}};if(p.startsWith('/v1/allocation/'))return s.get('allocations',p.split('/').pop());const id=p.split('/')[3];if(p.endsWith('/allocations'))return s.list('allocations').filter(a=>a.JobID===id);if(method==='DELETE'){s.delete('nomad',id);return {}};const j=s.get('nomad',id);if(!j)throw Object.assign(new Error('missing'),{status:404});return j;};
+const requestNomad=async(method,p,payload)=>{if(s.get('fault','scheduler')?.enabled)throw Object.assign(Error('private-upstream-details'),{status:403});if(p==='/v1/nodes')return [{ID:'node'}];if(p==='/v1/node/node')return node;if(p==='/v1/jobs'){s.put('nomad',payload.Job.ID,payload.Job);return {}};if(p.startsWith('/v1/allocation/'))return s.get('allocations',p.split('/').pop());const id=p.split('/')[3];if(p.endsWith('/allocations'))return s.list('allocations').filter(a=>a.JobID===id);if(method==='DELETE'){s.delete('nomad',id);return {}};const j=s.get('nomad',id);if(!j)throw Object.assign(new Error('missing'),{status:404});return j;};
 const ctx={store:s,env:{...this.env,PUBLIC_URL:'https://local.test'},workspaceId:w,userId:r.headers.get('user'),requestNomad,async schedule(){},broadcast(){},event(){}};
 if(path==='/seed'){s.put('projects','p',{id:'p',repository:'owner/app'});s.put('machines','m',{id:'m',credential_hash:await sha256('local-machine-token'),last_seen:new Date().toISOString(),report:{nomad:true,apple:{enabled:true,xcode:'Fixture',simulators:[{id:'sim'}]}}});return Response.json({ok:true})}
+if(path==='/fault'){s.put('fault','scheduler',await r.json());return Response.json({ok:true})}
 if(path==='/tick'){await reconcileAppleJobs(ctx);return Response.json(s.list('nomad'))}
 if(path==='/allocation'){const a=await r.json();s.put('allocations',a.ID,a);return Response.json({ok:true})}
 try{return await handleAppleJobs(r,ctx)}catch(e){return Response.json({error:e.message},{status:e.status||500})}}}
@@ -93,7 +94,18 @@ export default {fetch(r,e){return e.WORKSPACES.getByName(r.headers.get('workspac
     const second = await call(p, "POST", spec, {}, 201);
     const agent = { user: "", Authorization: "Bearer local-machine-token" };
     await call("/api/agent/m/apple-jobs", "POST", {}, agent, 410);
+    await call("/fault", "POST", { enabled: true });
+    await call("/tick");
+    let retrying = (await call(p)).jobs.find((x) => x.id === j.id);
+    assert.equal(retrying.status, "queued");
+    assert.match(retrying.reconcile_error, /will retry/);
+    assert(!JSON.stringify(retrying).includes("private-upstream-details"));
+    await call("/fault", "POST", { enabled: false });
     const registered = await call("/tick");
+    assert.equal(
+      (await call(p)).jobs.find((x) => x.id === j.id).reconcile_error,
+      undefined,
+    );
     const nomad = registered.find((n) => n.ID === j.nomad_job_id);
     assert.equal(nomad.TaskGroups[0].Tasks[0].Driver, "raw_exec");
     const attempt = nomad.TaskGroups[0].Tasks[0].Config.args.at(-1);
@@ -161,7 +173,16 @@ export default {fetch(r,e){return e.WORKSPACES.getByName(r.headers.get('workspac
     assert(!JSON.stringify(list).includes("local-scoped"));
     assert(!JSON.stringify(list).includes(claimed.job.attempt));
     await call(p + "/" + second.id, "DELETE");
+    await call("/fault", "POST", { enabled: true });
     await call("/tick");
+    const cancelling = (await call(p)).jobs.find((x) => x.id === second.id);
+    assert.equal(cancelling.status, "cancelling");
+    assert.match(cancelling.reconcile_error, /may still be running/);
+    await call("/fault", "POST", { enabled: false });
+    await call("/tick");
+    const cancelled = (await call(p)).jobs.find((x) => x.id === second.id);
+    assert.equal(cancelled.status, "cancelled");
+    assert.equal(cancelled.reconcile_error, undefined);
     await call(url, "POST", { status: "failed", log: "stale" }, auth, 409);
   } finally {
     await mf.dispose();

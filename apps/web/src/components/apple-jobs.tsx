@@ -13,6 +13,7 @@ type Job = {
   created_at: string;
   log?: string;
   error?: string;
+  reconcile_error?: string;
   has_artifact: boolean;
 };
 export function AppleJobs({
@@ -181,6 +182,7 @@ export function AppleJobs({
               {new Date(j.created_at).toLocaleString()}
             </Meta>
             {j.error && <Alert>{j.error}</Alert>}
+            {j.reconcile_error && <Alert>{j.reconcile_error}</Alert>}
             {j.log && (
               <details>
                 <summary className="cursor-pointer text-sm">Build log</summary>
