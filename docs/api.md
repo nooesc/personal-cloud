@@ -48,3 +48,15 @@ The hosted backend preserves the fleet/project/service API under `/api`, with Gi
 Every authenticated workspace request is routed to that workspace's Durable Object. Machine credentials and single-use enrollment tokens resolve through the directory to exactly one workspace. Global `/api/events` and service `/api/services/:id/events` WebSockets require the same session and membership checks.
 
 `POST /api/registry/credentials` returns that workspace's scoped OCI credentials. `/v2/` is the managed registry backed by R2. The operator-only `/api/operator/import` endpoint is disabled unless `MIGRATION_TOKEN` is configured. See [hosted setup](cloudflare-hosted.md) and [migration](hosted-migration.md) for deployment and supported migration boundaries.
+
+### Hosted PostgreSQL backups
+
+These routes require workspace membership. They are specific to the hosted edition.
+
+- `GET /api/databases/:id/backups`: policy plus backup/restore history; no transfer tokens or storage keys.
+- `POST /api/databases/:id/backups`: queue a manual backup of a healthy database.
+- `PUT /api/databases/:id/backups/policy`: `{ "enabled": true, "keep": 7 }`; daily cadence, retention 1–30 successful copies.
+- `POST /api/databases/:id/backups/:backupId/restore`: `{ "name": "Restored copy", "machine_id": "optional explicitly selected machine" }`; creates a separate destination and returns `target_database_id`.
+- `DELETE /api/databases/:id/backups/:backupId`: expire one completed copy, rejected while a restore uses it. This permanently removes that backup object.
+
+Backup transfers use `/api/agent/:machineId/database-backups/:operationId/data` with a short-lived operation credential; machine inventory credentials do not grant backup access. PUT is bounded binary data with Content-Length and `x-backup-sha256`; GET is allowed only for the matching restore operation. Each successful operation requires observed scheduler completion and a verified R2 object. See [hosted backup boundaries](cloudflare-hosted.md#postgresql-backups-and-restore-copies).

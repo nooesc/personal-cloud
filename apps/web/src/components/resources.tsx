@@ -1,3 +1,5 @@
+import { hosted } from "../lib/hosted";
+import { DatabaseBackups } from "./database-backups";
 import { useState } from "react";
 import { Database, ExternalLink, Globe, Plus, X } from "lucide-react";
 import { api } from "../lib/data";
@@ -207,6 +209,13 @@ export function Databases({
                 Remove
               </Button>
             </div>
+            {hosted && (
+              <DatabaseBackups
+                databaseId={d.id}
+                live={live}
+                refresh={refresh}
+              />
+            )}
             {d.error && (
               <p className="basis-full text-xs text-destructive">{d.error}</p>
             )}

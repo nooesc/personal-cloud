@@ -1,3 +1,4 @@
+import { handleBackups, reconcileBackups } from "./runtime/backups";
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./env";
 import {
@@ -193,6 +194,8 @@ export class Workspace extends DurableObject<Env> {
         await ctx.schedule(serviceEvents ? 1 : 60000);
         return new Response(null, { status: 101, webSocket: pair[0] });
       }
+      const backup = await handleBackups(request, ctx);
+      if (backup) return backup;
       const fleet = await handleFleet(request, ctx);
       if (fleet) return fleet;
       requireUser(ctx);
@@ -406,6 +409,7 @@ export class Workspace extends DurableObject<Env> {
         }
       }
       await reconcileRuntime(ctx);
+      await reconcileBackups(ctx);
       await reconcileDomains(ctx);
       for (const [collection, field, ttl] of [
         ["commands", "created_at", 3600000],

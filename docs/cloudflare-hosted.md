@@ -68,8 +68,20 @@ The Python integration check is restricted to localhost and creates explicitly s
 
 ## Registry limits and retention
 
-The managed OCI endpoint supports image manifest/index push and pull, blob uploads, ranged reads and tag listing. Upload requests require Content-Length and are limited to 100 MiB per chunk; larger layers need chunked resumable uploads. Incomplete upload state expires after 24 hours. Image garbage collection and customer backup scheduling are not implemented: configure operational retention before offering unbounded storage. R2 is not an automatic backup of customer database volumes.
+The managed OCI endpoint supports image manifest/index push and pull, blob uploads, ranged reads and tag listing. Upload requests require Content-Length and are limited to 100 MiB per chunk; larger layers need chunked resumable uploads. Incomplete upload state expires after 24 hours. Image garbage collection is not implemented: configure image retention before offering unbounded storage. Customer PostgreSQL backups are opt-in; see below.
 
 ## Migration
 
 See `hosted-migration.md`. Migration is explicit, operator-authenticated and into an empty hosted workspace; it preserves machine credential hashes and persistent ownership. Do not run both controllers against the same fleet. Keep the old database/keys and a reversible routing change until the hosted controller, existing agents, applications and domains are observed working.
+
+### PostgreSQL backups and restore copies
+
+Hosted database cards expose **Backups & restore**. Enable daily backups (seven successful copies by default), or run a manual backup. The authenticated policy API accepts retention from 1–30 copies. Scheduling is persisted in the workspace Durable Object; an unavailable database reports a schedule error and retries in an hour. Missed periods coalesce rather than enqueue a backlog.
+
+Each backup is a PostgreSQL 17 custom-format logical dump, executed on the database's pinned Nomad node. A short-lived, operation-scoped transfer credential uploads it into workspace-prefixed private R2 storage. R2 validates SHA-256; an operation succeeds only after both scheduler tasks finish and the stored object is verified. The initial compressed-dump limit is **100 MiB** with a 30-minute operation deadline. Larger databases need a multipart backup implementation before this feature can protect them. This is not continuous WAL archiving, PITR, HA, or a backup of the hosted D1/DO control plane.
+
+**Restore a copy** provisions a fresh database and volume on the explicitly selected machine (the original owner by default), verifies the stored checksum and runs `pg_restore --single-transaction --exit-on-error`. The destination remains unavailable for attachment, connection reveal and backup until restoration succeeds. It never rewrites the source or automatically rebinds applications. A failed copy keeps its own volume for diagnosis; retry by creating another restore copy. Confirm application-specific queries before switching a service to the restored copy.
+
+Retention expires only successful copies beyond the policy count and skips copies used by active restores. Expiration reserves the copy before storage deletion, preventing a new restore from racing it. Removing a database is blocked while it has retained backups; explicitly delete backup copies first. Disabling a schedule preserves copies; retention still applies to the configured count. Backup metadata and failures remain visible.
+
+Validation: `PC_BACKUP_POSTGRES=1 pnpm --filter @personal-cloud/control-cloud exec tsx --test test/backups-workerd.test.mjs` runs real PostgreSQL 17 dump/restore with an asserted persisted marker through local workerd R2/SQLite. The normal suite checks tenant isolation, credentials, SHA-256 rejection, separate restore ownership and the outer Worker's binary upload path. Local tests are not evidence of a live fleet backup.

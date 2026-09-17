@@ -257,13 +257,19 @@ export async function handleRuntime(
     );
   if (m) {
     const db = get(ctx, "databases", m[1]!);
-    if (m[2] === "connection" && method === "GET")
+    if (m[2] === "connection" && method === "GET") {
+      if (
+        db.restore_id &&
+        ctx.store.get("database_backups", db.restore_id)?.status !== "succeeded"
+      )
+        fail(409, "Connection is unavailable until restore succeeds");
       return json({
         connection_string: await ctx.open(
           `database:${db.id}`,
           db.connection_encrypted,
         ),
       });
+    }
     if (m[2] === "attach" && method === "POST") {
       await attachDatabase(ctx, db.id, (await body(request)).service_id);
       return json({ ok: true });
