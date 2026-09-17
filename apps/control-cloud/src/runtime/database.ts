@@ -243,6 +243,7 @@ async function remove(ctx: WorkspaceContext, db: Doc): Promise<void> {
       .list("bindings")
       .filter((b) => b.database_id === db.id))
       ctx.store.delete("bindings", binding.service_id);
+    ctx.store.delete("backup_policies", db.id);
     ctx.store.delete("databases", db.id);
     ctx.event(
       "database.removed",

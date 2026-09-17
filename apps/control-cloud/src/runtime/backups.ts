@@ -433,20 +433,25 @@ export async function reconcileBackups(ctx: WorkspaceContext): Promise<void> {
     .list("database_backups")
     .filter((b) => b.status === "expiring")) {
     try {
-      await ctx.env.ARTIFACTS.delete(old.object_key);
+      if (old.object_key) await ctx.env.ARTIFACTS.delete(old.object_key);
       save(ctx, "database_backups", { ...old, status: "expired" });
     } catch {
       /* Retry deletion on the next alarm. */
     }
   }
-  if (
-    ctx.store
-      .list("database_backups")
-      .some(
-        (b) =>
-          ACTIVE.has(b.status) || b.cleanup_pending || b.status === "expiring",
-      ) ||
-    ctx.store.list("backup_policies").some((p) => p.enabled)
-  )
-    await ctx.schedule(15000);
+  const active = ctx.store
+    .list("database_backups")
+    .some(
+      (b) =>
+        ACTIVE.has(b.status) || b.cleanup_pending || b.status === "expiring",
+    );
+  if (active) await ctx.schedule(15000);
+  else {
+    const due = ctx.store
+      .list("backup_policies")
+      .filter((p) => p.enabled && ctx.store.get("databases", p.id))
+      .map((p) => p.next_at);
+    if (due.length)
+      await ctx.schedule(Math.max(1000, Math.min(...due) - Date.now()));
+  }
 }
