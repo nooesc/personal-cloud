@@ -96,7 +96,7 @@ export function DatabaseBackups({
                       () =>
                         api(
                           `${base}/policy`,
-                          { enabled: !state.policy.enabled, keep: 7 },
+                          { enabled: !state.policy.enabled, keep: state.policy.keep },
                           "PUT",
                         ),
                       "Backup schedule updated",
@@ -109,7 +109,7 @@ export function DatabaseBackups({
                 </Button>
                 <span className="text-sm text-muted-foreground">
                   {state.policy.enabled
-                    ? "Daily · keep 7 successful copies"
+                    ? `Daily · keep ${state.policy.keep} successful copies`
                     : "Schedule off"}
                 </span>
               </div>
