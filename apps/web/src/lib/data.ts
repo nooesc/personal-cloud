@@ -1,4 +1,5 @@
 export type Report = {
+  apple?: { enabled: boolean; xcode: string | null; simulators: {id:string; name:string; runtime:string}[] };
   hostname: string;
   os: string;
   architecture: string;
@@ -46,8 +47,6 @@ export type Service = {
   health_path?: string;
   cpu_mhz?: number;
   memory_mb?: number;
-  demo_machine?: string;
-  demo_status?: string;
 };
 export type Activity = {
   id: number;
@@ -64,6 +63,8 @@ export type Deployment = {
   image_digest?: string;
   error?: string;
   created_at: string;
+  updated_at?: string;
+  finished_at?: string;
   steps?: { name?: string; step?: string; status?: string; message?: string }[];
   logs?: unknown[];
 };
@@ -74,7 +75,24 @@ export type DatabaseInstance = {
   machine_id?: string;
   status?: string;
   error?: string;
+  /** Present on hosted control planes; self-hosted V1 runs PostgreSQL 17 only. */
+  engine?: string;
+  version?: string;
+  /** Controller step within the current status (`submit`, `probe_submit`, `ready`, `retry`, `delete`). */
+  phase?: string;
+  address?: string;
+  port?: number;
+  volume_name?: string;
+  nomad_node_id?: string;
+  created_at?: string;
+  updated_at?: string;
+  /** When PostgreSQL last accepted an authenticated query from the controller. */
+  last_verified_at?: string;
+  /** Set while this database is a restore destination; `restore_failed` / `restoring` statuses follow it. */
+  restore_id?: string;
 };
+/** A service reads DATABASE_URL from one database; at most one binding per service. */
+export type DatabaseBinding = { service_id: string; database_id: string };
 export type Domain = {
   id: string;
   service_id: string;
@@ -88,8 +106,122 @@ export type Provider = {
   login?: string;
   account_id?: string;
   zone_id?: string;
-  zone_name?: string;
+  zone_name?: string | null;
   bucket?: string;
+};
+export type ReadinessAction =
+  | "connect_github"
+  | "add_machine"
+  | "configure_runtime"
+  | "check_machine"
+  | "retry";
+export type Blocker = { code: string; message: string; action: ReadinessAction };
+export type MachineState =
+  | "apple_ready"
+  | "offline"
+  | "reporting_only"
+  | "checking"
+  | "ready"
+  | "needs_setup";
+export type MachineCapability = {
+  machine_id: string;
+  state: MachineState;
+  can_run: boolean;
+  can_build: boolean;
+  can_database: boolean;
+  can_apple?: boolean;
+  reasons: string[];
+};
+/** The control plane's single answer to "can this workspace deploy?" (contract: apps/control-cloud/src/readiness.ts). */
+export type Readiness = {
+  status: "ready" | "blocked" | "checking";
+  checked_at: string | null;
+  counts: { connected: number; ready_to_run: number; ready_to_build: number };
+  blockers: Blocker[];
+  machines: MachineCapability[];
+  recommended_roles: string[];
+};
+export type Repository = {
+  id?: number;
+  full_name: string;
+  name?: string;
+  private: boolean;
+  default_branch: string;
+  description?: string | null;
+};
+/** A pending or recently used enrollment token, without the secret. */
+export type Enrollment = {
+  id: string;
+  expires_at: string;
+  status: "waiting" | "connected";
+  machine_id: string | null;
+};
+/** GET /integrations/cloudflare/overview: the account's Workers and Pages, read-only. */
+/** A hostname Cloudflare reports as attached: Worker custom domains, workers.dev routes, Pages custom domains. */
+export type CloudflareDomain = {
+  kind: "worker" | "pages";
+  name: string;
+  hostname: string;
+  environment: string;
+};
+export type CloudflareWorker = {
+  name: string;
+  modified_at: string | null;
+  dashboard_url: string;
+  /** 24h sampled Cloudflare estimates; null = unavailable, 0 = observed zero. */
+  requests: number | null;
+  errors: number | null;
+  subrequests: number | null;
+  /** Hourly sampled requests, oldest first, 24 buckets; null when Cloudflare did not report them. */
+  series: number[] | null;
+  /** Version upload times in the last 14 days, newest first; null when not read. */
+  changes: string[] | null;
+};
+export type CloudflarePage = {
+  name: string;
+  url: string | null;
+  dashboard_url: string;
+  production_branch: string | null;
+  deployment_status: string | null;
+  modified_at: string | null;
+  /** Production deployment times in the last 14 days, newest first; null when not read. */
+  changes: string[] | null;
+};
+/**
+ * A discovered Cloudflare resource's place in this workspace. Unassigned
+ * resources have no record; ignored ones keep `project_id: null`.
+ */
+export type ResourceEnvironment = "production" | "development" | "staging" | "preview";
+export type ProjectResource = {
+  id: string;
+  account_id: string;
+  kind: "worker" | "pages";
+  name: string;
+  project_id: string | null;
+  environment: ResourceEnvironment;
+  ignored: boolean;
+  updated_at: string;
+};
+export type Organization = { revision: string; resources: ProjectResource[] };
+export type Assignment = {
+  kind: ProjectResource["kind"];
+  name: string;
+  project_id?: string | null;
+  project_name?: string;
+  environment: ResourceEnvironment;
+  ignored?: boolean;
+};
+export type CloudflareOverview = {
+  status: "not_connected" | "connected" | "partial" | "error";
+  account_id: string | null;
+  checked_at: string | null;
+  window: { start: string; end: string } | null;
+  domains?: CloudflareDomain[] | null;
+  workers: CloudflareWorker[];
+  pages: CloudflarePage[];
+  issues: string[];
+  /** Absent on control planes without project organization. */
+  organization?: Organization;
 };
 export type Snapshot = {
   machines: Machine[];
@@ -97,142 +229,21 @@ export type Snapshot = {
   services: Service[];
   deployments: Deployment[];
   databases: DatabaseInstance[];
+  /** Absent on control planes predating attachment reporting. */
+  database_bindings?: DatabaseBinding[];
   domains: Domain[];
   activity: Activity[];
   integrations: { github: string | Provider; cloudflare: string | Provider };
+  /** Absent on control planes that do not publish readiness (legacy self-hosted). */
+  readiness?: Readiness;
+  enrollments?: Enrollment[];
   runtime?: Record<string, unknown>;
+  /** Saved Cloudflare resource links; hosted control planes only. */
+  project_resources?: ProjectResource[];
+  capabilities?: { project_organization?: boolean; apple_jobs?: boolean };
   generated_at: string;
 };
 const GB = 1024 ** 3;
-const machine = (
-  id: string,
-  hostname: string,
-  location: Machine["location"],
-  cores: number,
-  ram: number,
-  disk: number,
-  cpu: number,
-  used: number,
-  roles: string[],
-  status: Machine["status"] = "online",
-): Machine => ({
-  id,
-  location,
-  roles,
-  tags: location === "home" ? ["home-lab"] : ["us-east"],
-  last_seen: "2026-09-15T14:00:00Z",
-  status,
-  report: {
-    hostname,
-    os: "Ubuntu 24.04",
-    architecture: location === "home" ? "arm64" : "amd64",
-    cpu_cores: cores,
-    cpu_percent: cpu,
-    memory_total: ram * GB,
-    memory_used: used * GB,
-    disk_total: disk * GB,
-    disk_used: disk * 0.22 * GB,
-    docker: true,
-    nomad: status === "online",
-  },
-});
-export const demo: Snapshot = {
-  machines: [
-    machine("m1", "studio", "home", 16, 64, 2000, 22, 12, [
-      "compute",
-      "builder",
-    ]),
-    machine("m2", "mini", "home", 10, 32, 1000, 11, 5.2, ["compute"]),
-    machine("m3", "vps-east", "vps", 4, 8, 160, 47, 3.8, ["compute"]),
-    machine("m4", "db-01", "vps", 4, 16, 320, 18, 6.4, ["database"]),
-  ],
-  projects: [
-    {
-      id: "p1",
-      name: "Intake",
-      repository: "example/intake",
-      branch: "main",
-      created_at: "2026-09-15T14:00:00Z",
-    },
-    {
-      id: "p2",
-      name: "Social scraper",
-      repository: "example/social-scraper",
-      branch: "main",
-      created_at: "2026-09-15T13:00:00Z",
-    },
-    {
-      id: "p3",
-      name: "Personal website",
-      repository: "example/website",
-      branch: "main",
-      created_at: "2026-09-15T12:00:00Z",
-    },
-  ],
-  services: [
-    {
-      id: "s1",
-      project_id: "p1",
-      name: "web",
-      port: 3000,
-      placement: { kind: "automatic" },
-      demo_machine: "m3",
-      demo_status: "healthy",
-    },
-    {
-      id: "s2",
-      project_id: "p1",
-      name: "api",
-      port: 3001,
-      placement: { kind: "vps" },
-      demo_machine: "m3",
-      demo_status: "healthy",
-    },
-    {
-      id: "s3",
-      project_id: "p2",
-      name: "worker",
-      port: 8080,
-      placement: { kind: "home" },
-      demo_machine: "m1",
-      demo_status: "healthy",
-    },
-    {
-      id: "s4",
-      project_id: "p3",
-      name: "web",
-      port: 3000,
-      placement: { kind: "automatic" },
-      demo_machine: "m2",
-      demo_status: "healthy",
-    },
-  ],
-  deployments: [],
-  databases: [],
-  domains: [],
-  activity: [
-    {
-      id: 3,
-      kind: "deployment.healthy",
-      message: "Intake / web deployed successfully",
-      created_at: "2026-09-15T14:00:00Z",
-    },
-    {
-      id: 2,
-      kind: "machine.joined",
-      message: "mini joined your cloud",
-      created_at: "2026-09-15T13:00:00Z",
-    },
-    {
-      id: 1,
-      kind: "project.created",
-      message: "Personal website added to your cloud",
-      created_at: "2026-09-15T12:00:00Z",
-    },
-  ],
-  integrations: { github: "not_connected", cloudflare: "not_connected" },
-  generated_at: "2026-09-15T14:00:00Z",
-};
 export const empty: Snapshot = {
   machines: [],
   projects: [],
@@ -267,6 +278,7 @@ export async function api<T>(
     throw new ApiError(
       data.error ?? `Request failed (${response.status})`,
       response.status,
+      data.readiness,
     );
   }
   if (response.status === 204) return undefined as T;
@@ -278,7 +290,17 @@ export class ApiError extends Error {
   constructor(
     message: string,
     public status: number,
+    /** Deploy gates answer 409/503 with the readiness that blocked them. */
+    public readiness?: Readiness,
   ) {
     super(message);
   }
+}
+/** The platform zone public hostnames must live under, when the control plane publishes one. */
+export function platformZone(data: Snapshot): string | null {
+  const cf = data.integrations.cloudflare;
+  return typeof cf === "string" ? null : (cf.zone_name ?? null);
+}
+export function providerStatus(value: string | Provider | undefined): string {
+  return typeof value === "string" ? value : (value?.status ?? "not_connected");
 }

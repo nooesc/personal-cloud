@@ -1,12 +1,11 @@
 import { fail, id, now, type Doc, type WorkspaceContext } from "../core";
 import { sourceToken } from "../github";
+import { deploymentTargets } from "../readiness";
 import { registryCredentials, refreshServiceDomains } from "../integrations";
 import {
   applicationJob,
   buildJob,
-  fits,
   immutableImage,
-  ready,
   redact,
 } from "./jobs";
 import {
@@ -148,14 +147,19 @@ async function prepare(ctx: WorkspaceContext, d: Doc): Promise<void> {
     ? ctx.store.get("deployments", d.rollback_of)
     : undefined;
   const architecture = rollback?.architecture ?? s.architecture;
-  const target = inventory.find(
-    (n) =>
-      ready(n, "compute") &&
-      fits(n, s.placement) &&
-      (architecture === "auto" || architecture === n.Attributes?.["cpu.arch"]),
+  const selection = deploymentTargets(
+    inventory,
+    { ...s, architecture },
+    !d.image_digest,
   );
+  const target = selection.target;
   if (!target)
-    fail(409, "No healthy compute machine matches placement and architecture");
+    fail(
+      409,
+      selection.hasCompute
+        ? "Enable a builder matching the application machine's architecture."
+        : "No ready application machine matches this service's placement and architecture.",
+    );
   d.architecture = target.Attributes?.["cpu.arch"];
   d.datacenter = target.Datacenter ?? "dc1";
   d.job_id = `pc-deploy-${d.id}`;
@@ -173,11 +177,7 @@ async function prepare(ctx: WorkspaceContext, d: Doc): Promise<void> {
     d.phase_started_at = now();
     return;
   }
-  const builder = inventory.find(
-    (n) => ready(n, "builder") && n.Attributes?.["cpu.arch"] === d.architecture,
-  );
-  if (!builder)
-    fail(409, "No healthy builder matches the deployment architecture");
+  const builder = selection.builder!;
   d.builder_node_id = builder.ID;
   d.builder_datacenter = builder.Datacenter ?? "dc1";
   d.build_job_id = `pc-build-${d.id}`;

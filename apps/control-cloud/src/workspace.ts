@@ -1,8 +1,16 @@
+import { reconcileAppleJobs } from "./apple-nomad";
 import { handleBackups, reconcileBackups } from "./runtime/backups";
+import { handleAppleJobs } from "./apple-jobs";
+import {
+  createProject,
+  updateProject,
+  organization,
+} from "./project-organization";
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./env";
 import {
   body,
+  selectDocuments,
   fail,
   HttpError,
   id,
@@ -15,6 +23,8 @@ import {
   type WorkspaceContext,
 } from "./core";
 import { SqlStore } from "./store";
+import { CloudflareOverview } from "./cloudflare-overview";
+import { observeReadiness, workspaceReadiness } from "./readiness";
 import { open, seal, sha256, equal } from "./crypto";
 import { handleFleet, publicMachine } from "./fleet";
 import {
@@ -34,6 +44,8 @@ import { handleWorkspaceMigration } from "./migration";
 export class Workspace extends DurableObject<Env> {
   private store: SqlStore;
   private reconciling = false;
+  private cloudflareOverview = new CloudflareOverview();
+  private readinessRefresh: Promise<void> | undefined;
   constructor(state: DurableObjectState, env: Env) {
     super(state, env);
     this.store = new SqlStore(state.storage);
@@ -55,7 +67,12 @@ export class Workspace extends DurableObject<Env> {
       schedule: async (delay = 1000) => {
         const current = await this.ctx.storage.getAlarm(),
           next = Date.now() + Math.max(1, delay);
-        if (!current || current > next) await this.ctx.storage.setAlarm(next);
+        if (
+          !current ||
+          current > next ||
+          (current <= Date.now() && !this.reconciling)
+        )
+          await this.ctx.storage.setAlarm(next);
       },
       broadcast: () => this.broadcast(),
       event: (kind, message) => {
@@ -84,19 +101,66 @@ export class Workspace extends DurableObject<Env> {
     }
   }
   private async snapshot(ctx: WorkspaceContext): Promise<Doc> {
+    const integrations = await integrationStatus(ctx);
+    const observation = this.store.get("observations", "readiness");
+    if (
+      this.store.get("settings", "runtime") &&
+      !this.readinessRefresh &&
+      (!observation ||
+        Date.now() - Date.parse(observation.checked_at) > 10000 ||
+        observation.runtime !==
+          this.store.get("settings", "runtime")?.nomad_url)
+    ) {
+      this.readinessRefresh = observeReadiness(ctx)
+        .catch(() => {
+          console.error("readiness refresh failed");
+        })
+        .finally(() => {
+          this.readinessRefresh = undefined;
+        });
+      this.ctx.waitUntil(this.readinessRefresh);
+    }
     return {
+      readiness: workspaceReadiness(
+        ctx,
+        integrations.github.status === "connected",
+      ),
+      enrollments: this.store
+        .list("enrollments")
+        .filter((e) => !e.revoked_at)
+        .filter(
+          (e) =>
+            e.expires_at > Date.now() ||
+            (e.used_at && Date.now() - Date.parse(e.used_at) < 3600000),
+        )
+        .sort((a, b) => b.expires_at - a.expires_at)
+        .slice(0, 20)
+        .map((e) => ({
+          id: e.id,
+          expires_at: new Date(e.expires_at).toISOString(),
+          status: e.used_at ? "connected" : "waiting",
+          machine_id: e.machine_id ?? null,
+        })),
       machines: this.store.list("machines").map(publicMachine),
       projects: this.store.list("projects"),
+      project_resources: organization(ctx).resources,
+      capabilities: { project_organization: true, apple_jobs: true },
       services: this.store.list("services"),
-      deployments: this.store
-        .list("deployments")
-        .slice(-200)
-        .reverse()
-        .map(publicDeployment),
+      deployments: selectDocuments(this.store, "deployments", {
+        limit: 200,
+        reverse: true,
+      }).map(publicDeployment),
       databases: this.store.list("databases").map(publicDatabase),
+      // Which service reads which database; credentials stay sealed.
+      database_bindings: this.store
+        .list("bindings")
+        .map((b) => ({ service_id: b.service_id, database_id: b.database_id })),
       domains: this.store.list("domains").map(({ tunnel_token, ...d }) => d),
-      activity: this.store.list("events").slice(-30).reverse(),
-      integrations: await integrationStatus(ctx),
+      activity: selectDocuments(this.store, "events", {
+        limit: 30,
+        reverse: true,
+      }),
+      integrations,
       generated_at: now(),
     };
   }
@@ -196,50 +260,37 @@ export class Workspace extends DurableObject<Env> {
       }
       const backup = await handleBackups(request, ctx);
       if (backup) return backup;
+      const apple = await handleAppleJobs(request, ctx);
+      if (apple) return apple;
       const fleet = await handleFleet(request, ctx);
       if (fleet) return fleet;
       requireUser(ctx);
+      const cloudflareView = await this.cloudflareOverview.handle(request, ctx);
+      if (cloudflareView) return cloudflareView;
       if (path === "/api/snapshot" && request.method === "GET")
         return json(await this.snapshot(ctx));
-      if (path === "/api/projects" && request.method === "POST") {
-        const input = await body(request),
-          name = text(input.name, 80),
-          repo = text(input.repository, 200)
-            .replace(/^https:\/\/github.com\//, "")
-            .replace(/\.git$/, "");
-        if (
-          !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) ||
-          repo.includes("..")
-        )
-          fail(400, "Use a GitHub owner/repository");
-        if (
-          this.store.list("projects").length >=
-          Number(this.env.MAX_PROJECTS_PER_WORKSPACE)
-        )
-          fail(409, "Workspace project limit reached");
-        const project = {
-          id: id(),
-          name,
-          repository: repo,
-          branch: text(input.branch ?? "main", 200),
-          created_at: now(),
-        };
-        this.store.put("projects", project.id, project);
-        ctx.event("project.created", `${name} added to your cloud`);
-        ctx.broadcast();
-        return json(project, 201);
-      }
+      if (path === "/api/projects" && request.method === "POST")
+        return json(createProject(ctx, await body(request)), 201);
+      const projectUpdate = path.match(/^\/api\/projects\/([^/]+)$/);
+      if (projectUpdate && request.method === "PATCH")
+        return json(updateProject(ctx, projectUpdate[1], await body(request)));
       const projectServices = path.match(
         /^\/api\/projects\/([^/]+)\/services$/,
       );
       if (projectServices && request.method === "POST") {
+        const input = await body(request);
+        // Re-read after body I/O so repository edits or deletion cannot race this guard.
         const project = this.store.get("projects", projectServices[1]);
         if (!project) fail(404, "Project not found");
+        if (!project.repository)
+          fail(
+            409,
+            "Connect a GitHub repository before adding a machine service",
+          );
         if (project.status === "deleting")
           fail(409, "Project is being removed");
-        const input = await body(request),
-          name = text(input.name, 80),
-          port = Number(input.port);
+        const name = text(input.name, 80),
+          port = Number(input.port ?? 3000);
         if (!Number.isInteger(port) || port < 1 || port > 65535)
           fail(400, "Invalid port");
         if (
@@ -322,17 +373,17 @@ export class Workspace extends DurableObject<Env> {
     const key = await sha256(
       JSON.stringify([machineId, method, path, payload ?? null]),
     );
-    let command = this.store
-      .list("commands")
-      .find(
-        (c) =>
-          c.key === key &&
-          ((!c.completed_at && c.claimed_at && method !== "GET") ||
-            (c.expires_at > Date.now() &&
-              (!c.completed_at ||
-                Date.now() - Date.parse(c.completed_at) <
-                  (method === "GET" ? 5000 : 60000)))),
-      );
+    let command = selectDocuments(this.store, "commands", {
+      equal: { key },
+    }).find(
+      (c) =>
+        c.key === key &&
+        ((!c.completed_at && c.claimed_at && method !== "GET") ||
+          (c.expires_at > Date.now() &&
+            (!c.completed_at ||
+              Date.now() - Date.parse(c.completed_at) <
+                (method === "GET" ? 5000 : 60000)))),
+    );
     if (
       command?.claimed_at &&
       !command.completed_at &&
@@ -408,18 +459,25 @@ export class Workspace extends DurableObject<Env> {
             console.error("push deployment pending", pending.service_id);
         }
       }
+      await reconcileAppleJobs(ctx);
       await reconcileRuntime(ctx);
       await reconcileBackups(ctx);
       await reconcileDomains(ctx);
-      for (const [collection, field, ttl] of [
-        ["commands", "created_at", 3600000],
-        ["samples", "sampled_at", 6 * 3600000],
-        ["webhooks", "created_at", 7 * 86400000],
-        ["events", "created_at", 30 * 86400000],
-      ] as const)
-        for (const row of this.store.list(collection))
-          if (Date.parse(row[field]) < Date.now() - ttl)
-            this.store.delete(collection, row.id);
+      const cleanup = this.store.get("meta", "cleanup");
+      if (!cleanup || cleanup.next_at <= Date.now()) {
+        for (const [collection, field, ttl] of [
+          ["commands", "created_at", 3600000],
+          ["samples", "sampled_at", 6 * 3600000],
+          ["webhooks", "created_at", 7 * 86400000],
+          ["events", "created_at", 30 * 86400000],
+        ] as const)
+          this.store.prune(
+            collection,
+            field,
+            new Date(Date.now() - ttl).toISOString(),
+          );
+        this.store.put("meta", "cleanup", { next_at: Date.now() + 60000 });
+      }
       const observations = new Map<string, Doc>();
       for (const ws of this.ctx.getWebSockets()) {
         const attachment = ws.deserializeAttachment() as Doc;
@@ -466,6 +524,11 @@ export class Workspace extends DurableObject<Env> {
     } finally {
       this.reconciling = false;
       const active =
+        this.store
+          .list("apple_jobs")
+          .some((j) =>
+            ["queued", "running", "cancelling"].includes(j.status),
+          ) ||
         this.store
           .list("runtime_operations")
           .some((o) => !["completed", "failed"].includes(o.status)) ||

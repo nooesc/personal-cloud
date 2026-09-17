@@ -1,3 +1,4 @@
+mod apple;
 mod provision;
 
 use anyhow::{Context, Result, ensure};
@@ -9,7 +10,7 @@ use sysinfo::{Disks, System};
 
 #[derive(Parser)]
 #[command(
-    about = "Connect a machine to Personal Cloud; --provision explicitly configures the private Linux runtime."
+    about = "Connect a machine to dinghy; --provision explicitly configures the private Linux runtime."
 )]
 struct Args {
     #[arg(long, env = "PC_API", default_value = "http://127.0.0.1:4311")]
@@ -21,20 +22,32 @@ struct Args {
     #[arg(long)]
     once: bool,
     #[arg(long)]
+    apple_jobs: bool,
+    #[arg(long, requires = "apple_attempt")]
+    apple_run: Option<String>,
+    #[arg(long)]
+    apple_attempt: Option<String>,
+    #[arg(long, default_value = ".pc-apple-jobs")]
+    apple_work_dir: PathBuf,
+    #[arg(long)]
     provision: bool,
     #[arg(long, requires = "provision")]
     rotate_wireguard: bool,
     #[arg(long, env = "PC_WIREGUARD_ENDPOINT")]
     wireguard_endpoint: Option<String>,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Identity {
     id: String,
     credential: String,
     api: String,
 }
 
-async fn report(client: &reqwest::Client, endpoint: &Option<String>) -> MachineReport {
+async fn report(
+    client: &reqwest::Client,
+    endpoint: &Option<String>,
+    apple: &Option<serde_json::Value>,
+) -> MachineReport {
     let mut system = System::new_all();
     tokio::time::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL).await;
     system.refresh_cpu_usage();
@@ -69,6 +82,7 @@ async fn report(client: &reqwest::Client, endpoint: &Option<String>) -> MachineR
         .await
         .is_ok_and(|r| r.status().is_success());
     MachineReport {
+        apple: apple.clone(),
         hostname: System::host_name().unwrap_or("unknown".into()),
         os: System::long_os_version().unwrap_or(std::env::consts::OS.into()),
         architecture: match std::env::consts::ARCH {
@@ -91,6 +105,8 @@ async fn report(client: &reqwest::Client, endpoint: &Option<String>) -> MachineR
         wireguard_endpoint: endpoint.clone(),
         gpu: gpu_inventory().await,
         network: network_inventory().await,
+        load_avg1: Some(System::load_average().one as f32).filter(|v| v.is_finite()),
+        uptime_sec: Some(System::uptime()),
     }
 }
 #[tokio::main]
@@ -111,6 +127,7 @@ async fn main() -> Result<()> {
     if args.provision {
         provision::prepare(args.rotate_wireguard)?;
     }
+    let apple = apple::capability(args.apple_jobs).await;
     let identity: Identity = if args.state.exists() {
         #[cfg(unix)]
         {
@@ -132,7 +149,7 @@ async fn main() -> Result<()> {
             .context("Create an enrollment token in the dashboard and set PC_ENROLL_TOKEN")?;
         let response = client
             .post(format!("{api}/api/agent/enroll"))
-            .json(&serde_json::json!({"token":enrollment,"report":report(&client, &args.wireguard_endpoint).await}))
+            .json(&serde_json::json!({"token":enrollment,"report":report(&client, &args.wireguard_endpoint, &apple).await}))
             .send()
             .await?;
         ensure!(
@@ -171,11 +188,21 @@ async fn main() -> Result<()> {
         client
             .post(format!("{api}/api/agent/{}/heartbeat", identity.id))
             .bearer_auth(&identity.credential)
-            .json(&report(&client, &args.wireguard_endpoint).await)
+            .json(&report(&client, &args.wireguard_endpoint, &apple).await)
             .send()
             .await?
             .error_for_status()?;
         reconcile(&client, &identity).await?;
+    }
+    if let Some(job_id) = args.apple_run {
+        return apple::run_nomad(
+            client,
+            identity,
+            args.apple_work_dir,
+            job_id,
+            args.apple_attempt.context("Missing job attempt")?,
+        )
+        .await;
     }
     let mut last_reconcile = tokio::time::Instant::now();
     let mut last_heartbeat = tokio::time::Instant::now() - Duration::from_secs(10);
@@ -198,7 +225,7 @@ async fn main() -> Result<()> {
         let result = client
             .post(format!("{api}/api/agent/{}/heartbeat", identity.id))
             .bearer_auth(&identity.credential)
-            .json(&report(&client, &args.wireguard_endpoint).await)
+            .json(&report(&client, &args.wireguard_endpoint, &apple).await)
             .send()
             .await;
         match result {

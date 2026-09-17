@@ -240,7 +240,7 @@ async fn manifest_start(
         )
     };
     let origin = app.origin.as_str();
-    let manifest = json!({"name":"Personal Cloud", "url":origin,"description":"Deploy selected GitHub repositories to your own Personal Cloud fleet.","public":true,"redirect_url":format!("{origin}/api/github/app/callback"),"callback_urls":[format!("{origin}/api/github/auth/callback")],"setup_url":format!("{origin}/api/github/app/installed"),"setup_on_update":true,"request_oauth_on_install":false,"hook_attributes":{"url":format!("{origin}/api/github/app/webhook"),"active":true},"default_permissions":{"contents":"read","metadata":"read"},"default_events":["push"]});
+    let manifest = json!({"name":"dinghy", "url":origin,"description":"Deploy selected GitHub repositories to your own dinghy fleet.","public":true,"redirect_url":format!("{origin}/api/github/app/callback"),"callback_urls":[format!("{origin}/api/github/auth/callback")],"setup_url":format!("{origin}/api/github/app/installed"),"setup_on_update":true,"request_oauth_on_install":false,"hook_attributes":{"url":format!("{origin}/api/github/app/webhook"),"active":true},"default_permissions":{"contents":"read","metadata":"read"},"default_events":["push"]});
     Ok((
         [
             (header::SET_COOKIE, cookie),

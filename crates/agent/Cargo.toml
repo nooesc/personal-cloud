@@ -13,3 +13,6 @@ reqwest.workspace = true
 personal-cloud-core = { path = "../core" }
 sysinfo = "0.33"
 clap = { version = "4", features = ["derive", "env"] }
+
+libc = "0.2"
+base64 = "0.22"

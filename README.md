@@ -1,4 +1,4 @@
-# Personal Cloud
+# dinghy
 
 ## Cloudflare hosted edition
 
@@ -11,7 +11,7 @@ A multi-customer deployment is available in `apps/control-cloud` and the existin
 
 A self-hosted deployment platform for Linux machines at home and in the cloud. Connect GitHub and Cloudflare, install a machine, and deploy applications through one dashboard.
 
-Personal Cloud combines a Rust control plane, PostgreSQL, a TanStack Start dashboard, Nomad, Docker, WireGuard, Railpack, BuildKit, and Cloudflare R2/Tunnel/DNS. It runs your workloads on machines you own or rent.
+dinghy combines a Rust control plane, PostgreSQL, a TanStack Start dashboard, Nomad, Docker, WireGuard, Railpack, BuildKit, and Cloudflare R2/Tunnel/DNS. It runs your workloads on machines you own or rent.
 
 ## Start the complete application
 
@@ -23,7 +23,7 @@ cd personal-cloud
 bash scripts/start.sh
 ```
 
-Open **http://127.0.0.1:4310**. Sign in with `PC_ADMIN_TOKEN` from the generated **`.env.production`** file. The default workspace is live and empty; sample data is available only through the explicit **Explore sample workspace** action.
+Open **http://127.0.0.1:4310**. Sign in with `PC_ADMIN_TOKEN` from the generated **`.env.production`** file. The default workspace is live and empty; all dashboard data comes from your connected workspace.
 
 The production stack includes the built web application, API, and a persistent PostgreSQL volume. Only the web listener is published, on loopback by default. API requests, installer downloads, and WebSocket updates pass through the same web origin. PostgreSQL and the API have no published host ports.
 
@@ -51,9 +51,11 @@ For a proxy on another host or container network, deliberately choose the host b
 6. **New project:** choose a GitHub repository and production branch. Add a service, set its listening port and health path, then select **Deploy latest**.
 7. Follow build and health-check progress in the service details. Add a public hostname through **Domains → Expose service** once the service is healthy.
 
-The installer supports **Ubuntu 22.04/24.04 and Debian 12/13 with systemd**, on amd64 or arm64. It installs Docker, Nomad, and WireGuard, verifies release archive checksums, and runs the agent as a system service. Builder machines also install BuildKit. macOS machines require a Linux VM; see [fleet setup](infra/README.md).
+The installer supports **Ubuntu 22.04/24.04, Debian 12/13, Fedora 44 (including Asahi Remix), Arch Linux, and Omarchy 4 with systemd**, on amd64 or arm64. It preserves an existing Docker installation, installs missing Docker/Nomad/WireGuard tools, verifies release archive checksums, and runs the agent as a system service. Builder machines also install BuildKit. Arch/Omarchy support requires the v0.3.0 agent or an agent built from this checkout. The installer uses existing package databases and does not perform an unattended OS upgrade. Linux container workloads on macOS require a Linux VM. Native Apple tasks use a macOS Nomad client; see [Apple jobs](docs/apple-jobs.md).
 
-**Published release:** [v0.2.0](https://github.com/nooesc/personal-cloud/releases/tag/v0.2.0) includes agent downloads and public API, web, and builder images. Both `ghcr.io/nooesc/personal-cloud-api` and `ghcr.io/nooesc/personal-cloud-web` support Linux amd64 and arm64. Anonymous image pulls and a fresh default `bash scripts/start.sh` installation were verified: the published images served the dashboard, API, authenticated WebSockets, and persistent encrypted data without registry login or a source-build override. The `latest` API/web tags currently resolve to v0.2.0.
+**Fedora support in this checkout:** Fedora 44 / Asahi support requires the v0.3.0 agent or a source build; the older v0.2.0 download does not contain it. Native ARM64 provisioning and a Nomad-scheduled HTTP container were verified on Fedora Asahi 44 with SELinux enforcing and an existing Docker Swarm. Existing containers retained their IDs and start times. Fresh Fedora Docker installation and cross-machine WireGuard connectivity have not been verified. Registry configuration uses a validated Docker reload, never an automatic Docker restart.
+
+**Release downloads:** [GitHub releases](https://github.com/nooesc/personal-cloud/releases) provide agent downloads and public API, web, and builder images. Both `ghcr.io/nooesc/personal-cloud-api` and `ghcr.io/nooesc/personal-cloud-web` support Linux amd64 and arm64. For the v0.2.0 baseline, anonymous image pulls and a fresh default `bash scripts/start.sh` installation were verified: the published images served the dashboard, API, authenticated WebSockets, and persistent encrypted data without registry login or a source-build override. The `latest` API/web tags follow the newest published release; use an explicit version for reproducible upgrades. See the [v0.3.0 hosted acceptance record](docs/hosted-acceptance.md) for the observed fleet, database, backup and rollback checks and their remaining boundary.
 
 The default image tag is `latest`. Set `PC_VERSION=vX.Y.Z` in `.env.production` to pin both control-plane images to a release. To build an unpublished checkout or verify local changes instead:
 
@@ -70,7 +72,7 @@ The explicit source-build path downloads Rust/Node build dependencies inside Doc
 - **Builds:** Railpack detection/build planning, BuildKit builds, OCI image upload, scheduler placement, and ordered build progress with visible failure details.
 - **Secrets:** encrypted project variables with explicit reveal; changes take effect on the next deployment.
 - **PostgreSQL:** provision a persistent database on a healthy database-role machine, attach `DATABASE_URL` to a service, reveal connection credentials explicitly, and monitor health. Database placement stays pinned. Removing a database preserves its volume.
-- **Domains:** provision Cloudflare Tunnel/DNS routing for healthy services and remove only the resources owned by Personal Cloud.
+- **Domains:** provision Cloudflare Tunnel/DNS routing for healthy services and remove only the resources owned by dinghy.
 - **Observability:** live fleet snapshots, deployment progress, activity, service logs, and allocation metrics. Connection failures remain visible; live failures never switch to sample data.
 - **Access:** GitHub owner sign-in, selected personal/organization repository access through GitHub App installations, owner-token recovery, hashed/revocable browser sessions, distinct one-use enrollment tokens and agent credentials, and encrypted provider credentials.
 
@@ -96,7 +98,7 @@ docker compose --env-file .env.production -f compose.production.yml exec -T post
   pg_dump -U personal_cloud -d personal_cloud -Fc > work/backups/control-plane.dump
 ```
 
-Back up application PostgreSQL volumes separately. A control-plane backup contains configuration and encrypted credentials, not application database contents. Do not run `down --volumes` unless intentionally destroying the control database. Database machines are never automatically relocated; plan explicit offline backup/restore for a move.
+The hosted edition offers opt-in daily PostgreSQL backups and restores into separate copies; see [hosted backup limits and verification](docs/cloudflare-hosted.md#postgresql-backups-and-restore-copies). For the self-hosted edition, back up application PostgreSQL volumes separately. A control-plane backup contains configuration and encrypted credentials, not application database contents. Do not run `down --volumes` unless intentionally destroying the control database. Database machines are never automatically relocated; plan explicit offline backup/restore for a move.
 
 `PC_ENV_FILE`, `PC_COMPOSE_PROJECT`, and `PC_PORT` can isolate an additional stack. `PC_VERSION` selects the published API/web image tag; `PC_BUILD_FROM_SOURCE=1` explicitly builds this checkout. Use a different Compose project to keep its volume separate. Existing credentials are never regenerated automatically.
 
@@ -135,4 +137,8 @@ scripts/              Development, production startup, installation, verificatio
 
 ## License
 
-Personal Cloud is licensed under [Apache-2.0](LICENSE). Dependencies retain their licenses. Nomad is distributed separately; this project's license does not relicense Nomad.
+dinghy is licensed under [Apache-2.0](LICENSE). Dependencies retain their licenses. Nomad is distributed separately; this project's license does not relicense Nomad.
+
+### Native Apple build/test workers
+
+The hosted edition schedules iOS Simulator builds and tests on your own Mac through Nomad, with exact-commit allocations, cancellation, private Xcode results, and observed Apple readiness. See [Apple jobs](docs/apple-jobs.md) for setup, trust boundaries, and current limitations.

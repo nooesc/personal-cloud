@@ -1,8 +1,8 @@
-import { hosted } from "../lib/hosted";
-import { DatabaseBackups } from "./database-backups";
+import { CloudflareDomains } from "./cloudflare-domains";
 import { useState } from "react";
-import { Database, ExternalLink, Globe, Plus, X } from "lucide-react";
-import { api } from "../lib/data";
+import { ExternalLink, Globe, Plus, X } from "lucide-react";
+import { api, platformZone, type Snapshot } from "../lib/data";
+import { cn } from "../lib/utils";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import {
@@ -13,12 +13,12 @@ import {
   CardHeader,
   CardTitle,
 } from "./ui/card";
-import { Input, Select } from "./ui/input";
-import { EmptyState, Meta, StatusDot } from "./ui/misc";
+import { Input, Select, fieldClasses } from "./ui/input";
+import { Alert, EmptyState, Meta, StatusDot } from "./ui/misc";
+import { slug } from "./service-fields";
 import {
   Feedback,
   Field,
-  Secret,
   Submit,
   useAction,
   type LiveProps,
@@ -32,242 +32,58 @@ function statusVariant(status?: string) {
       ? "red"
       : "yellow";
 }
-export function Databases({
+/**
+ * Hosted workspaces publish under the platform zone: the user picks the left
+ * label and the zone is fixed. The form still receives the full hostname via
+ * the hidden input. The suggested label follows `defaultLabel` until the user
+ * edits it. Self-hosted keeps the free hostname field.
+ */
+export function HostnameField({
   data,
-  refresh,
-  live,
-  projectId,
-}: { projectId?: string } & LiveProps) {
-  const action = useAction(),
-    [creating, setCreating] = useState(false),
-    [attaching, setAttaching] = useState<string>(),
-    [secret, setSecret] = useState<{ id: string; value: string }>();
-  const databases = data.databases.filter(
-    (d) => !projectId || d.project_id === projectId,
-  );
+  defaultLabel = "",
+  name = "hostname",
+}: {
+  data: Snapshot;
+  defaultLabel?: string;
+  name?: string;
+}) {
+  const zone = platformZone(data),
+    [edited, setEdited] = useState<string>(),
+    label = edited ?? defaultLabel;
+  if (!zone)
+    return (
+      <Field
+        label="Public address"
+        hint="A hostname in your connected Cloudflare zone."
+      >
+        <Input
+          name={name}
+          required
+          placeholder="app.example.com"
+          pattern="[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+        />
+      </Field>
+    );
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Databases</CardTitle>
-        <CardDescription>
-          PostgreSQL, private and persistent, pinned to its machine.
-        </CardDescription>
-        <CardAction>
-          <Button
-            size="sm"
-            variant={creating ? "outline" : "default"}
-            disabled={!live}
-            onClick={() => setCreating(!creating)}
-          >
-            {creating ? <X /> : <Plus />}
-            {creating ? "Cancel" : "New database"}
-          </Button>
-        </CardAction>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        <Feedback action={action} />
-        {creating && (
-          <form
-            className="flex flex-col gap-4 rounded-lg border border-border p-4"
-            onSubmit={(e) => {
-              e.preventDefault();
-              const form = new FormData(e.currentTarget);
-              void action.run(async () => {
-                await api("/databases", {
-                  project_id: form.get("project_id"),
-                  name: form.get("name"),
-                  machine_id: form.get("machine_id") || undefined,
-                  service_ids: form.getAll("service_ids"),
-                });
-                await refresh();
-                setCreating(false);
-              }, "Database provisioning requested");
-            }}
-          >
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Project">
-                <Select required name="project_id" defaultValue={projectId}>
-                  {data.projects
-                    .filter((p) => !projectId || p.id === projectId)
-                    .map((p) => (
-                      <option value={p.id} key={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
-                </Select>
-              </Field>
-              <Field
-                label="Database name"
-                name="name"
-                required
-                placeholder="postgres"
-              />
-              <Field
-                label="Machine"
-                className="sm:col-span-2"
-                hint="Placement is permanent. Personal Cloud never automatically moves database data."
-              >
-                <Select name="machine_id">
-                  <option value="">Automatic · healthy database machine</option>
-                  {data.machines
-                    .filter(
-                      (m) =>
-                        m.roles.includes("database") && m.status === "online",
-                    )
-                    .map((m) => (
-                      <option value={m.id} key={m.id}>
-                        {m.report.hostname}
-                      </option>
-                    ))}
-                </Select>
-              </Field>
-            </div>
-            <Submit busy={action.busy}>Provision PostgreSQL</Submit>
-          </form>
-        )}
-        {databases.map((d) => (
-          <div className={rowClass} key={d.id}>
-            <StatusDot status={d.status ?? "pending"} />
-            <span className="text-sm font-medium">{d.name}</span>
-            <Meta>
-              {data.projects.find((p) => p.id === d.project_id)?.name} ·{" "}
-              {data.machines.find((m) => m.id === d.machine_id)?.report
-                .hostname ?? "Awaiting placement"}
-            </Meta>
-            <Badge variant={statusVariant(d.status)} className="capitalize">
-              {d.status ?? "Provisioning"}
-            </Badge>
-            <div className="ml-auto flex flex-wrap items-center gap-1.5">
-              {["failed", "degraded"].includes(d.status ?? "") && (
-                <Button
-                  size="xs"
-                  variant="outline"
-                  disabled={action.busy || !live}
-                  onClick={() =>
-                    action.run(async () => {
-                      await api(`/databases/${d.id}/retry`, {});
-                      await refresh();
-                    }, "Database recovery requested on its existing machine")
-                  }
-                >
-                  Retry
-                </Button>
-              )}
-              <Button
-                size="xs"
-                variant="outline"
-                disabled={action.busy || !live}
-                onClick={() => {
-                  if (secret?.id === d.id) {
-                    setSecret(undefined);
-                    return;
-                  }
-                  void action.run(async () => {
-                    const result = await api<Record<string, string>>(
-                      `/databases/${d.id}/connection`,
-                    );
-                    setSecret({
-                      id: d.id,
-                      value:
-                        result.connection_string ??
-                        result.database_url ??
-                        result.url ??
-                        JSON.stringify(result),
-                    });
-                  }, "");
-                }}
-              >
-                {secret?.id === d.id ? "Hide connection" : "Reveal connection"}
-              </Button>
-              <Button
-                size="xs"
-                variant="outline"
-                disabled={action.busy || !live}
-                onClick={() =>
-                  setAttaching(attaching === d.id ? undefined : d.id)
-                }
-              >
-                Attach
-              </Button>
-              <Button
-                size="xs"
-                variant="destructive"
-                disabled={action.busy || !live}
-                onClick={() => {
-                  if (
-                    confirm(
-                      `Stop and remove database ${d.name}? Its persistent volume will be preserved.`,
-                    )
-                  )
-                    void action.run(async () => {
-                      await api(`/databases/${d.id}`, undefined, "DELETE");
-                      setSecret(undefined);
-                      await refresh();
-                    }, "Database removed; persistent volume preserved");
-                }}
-              >
-                Remove
-              </Button>
-            </div>
-            {hosted && (
-              <DatabaseBackups
-                databaseId={d.id}
-                live={live}
-                refresh={refresh}
-              />
-            )}
-            {d.error && (
-              <p className="basis-full text-xs text-destructive">{d.error}</p>
-            )}
-            {secret?.id === d.id && (
-              <div className="basis-full">
-                <Secret value={secret.value} />
-              </div>
-            )}
-            {attaching === d.id && (
-              <form
-                className="flex basis-full flex-wrap items-end gap-3"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const form = new FormData(e.currentTarget);
-                  void action.run(async () => {
-                    await api(`/databases/${d.id}/attach`, {
-                      service_id: form.get("service_id"),
-                    });
-                    await refresh();
-                  }, "DATABASE_URL attached. Redeploy the service to apply it.");
-                }}
-              >
-                <Field label="Attach to service" className="min-w-48 flex-1">
-                  <Select required name="service_id" size="sm">
-                    <option value="">Select a service</option>
-                    {data.services
-                      .filter((s) => s.project_id === d.project_id)
-                      .map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name}
-                        </option>
-                      ))}
-                  </Select>
-                </Field>
-                <Submit busy={action.busy || !live}>Attach</Submit>
-              </form>
-            )}
-          </div>
-        ))}
-        {!databases.length && !creating && (
-          <EmptyState
-            icon={<Database />}
-            title="A steady home for your data"
-            description={
-              data.projects.length
-                ? "Provision PostgreSQL on a database machine, then attach its connection to an application."
-                : "Create a project first to add its database."
-            }
-          />
-        )}
-      </CardContent>
-    </Card>
+    <Field label="Public address">
+      <div className="flex w-full">
+        <input
+          data-slot="input"
+          value={label}
+          onChange={(e) => setEdited(e.target.value.toLowerCase())}
+          required
+          pattern="[a-z0-9]([a-z0-9-]*[a-z0-9])?"
+          placeholder="my-app"
+          autoCapitalize="none"
+          spellCheck={false}
+          className={cn(fieldClasses, "flex-1 rounded-r-none border-r-0")}
+        />
+        <span className="flex shrink-0 items-center rounded-r-lg border border-l-0 border-input bg-muted px-2 font-mono text-xs text-muted-foreground">
+          .{zone}
+        </span>
+        <input type="hidden" name={name} value={label && `${label}.${zone}`} />
+      </div>
+    </Field>
   );
 }
 export function Domains({
@@ -275,21 +91,36 @@ export function Domains({
   refresh,
   live,
   projectId,
-}: { projectId?: string } & LiveProps) {
+  onNavigate,
+}: {
+  projectId?: string;
+  onNavigate?: (page: "Repositories") => void;
+} & LiveProps) {
+  const hasCloudflare = (data.project_resources ?? []).some(
+    (r) =>
+      !r.ignored && r.project_id && (!projectId || r.project_id === projectId),
+  );
   const action = useAction(),
     [creating, setCreating] = useState(false);
   const services = data.services.filter(
       (s) => !projectId || s.project_id === projectId,
     ),
+    eligible = services.filter(
+      (s) => s.status === "healthy" || s.status === "running",
+    ),
     domains = data.domains.filter(
       (d) => !projectId || services.some((s) => s.id === d.service_id),
+    ),
+    suggested = slug(
+      data.projects.find((p) => p.id === (projectId ?? eligible[0]?.project_id))
+        ?.name ?? "",
     );
   return (
     <Card>
-      <CardHeader>
-        <CardTitle>Domains</CardTitle>
+      <CardHeader className="flex flex-col gap-2 sm:grid">
+        <CardTitle>Public addresses</CardTitle>
         <CardDescription>
-          A secure public address for your service.
+          Existing Cloudflare addresses and public URLs managed by Dinghy.
         </CardDescription>
         <CardAction>
           <Button
@@ -299,13 +130,35 @@ export function Domains({
             onClick={() => setCreating(!creating)}
           >
             {creating ? <X /> : <Plus />}
-            {creating ? "Cancel" : "Expose service"}
+            {creating ? "Cancel" : "Add public address"}
           </Button>
         </CardAction>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
+        {hasCloudflare && (
+          <CloudflareDomains data={data} projectId={projectId} />
+        )}
         <Feedback action={action} />
-        {creating && (
+        {creating && !eligible.length && (
+          <Alert>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+              <span>
+                Deploy a service first. Public addresses attach to a healthy
+                deployment.
+              </span>
+              {onNavigate && (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={() => onNavigate("Repositories")}
+                >
+                  Open repositories
+                </Button>
+              )}
+            </div>
+          </Alert>
+        )}
+        {creating && eligible.length > 0 && (
           <form
             className="flex flex-col gap-4 rounded-lg border border-border p-4"
             onSubmit={(e) => {
@@ -318,90 +171,79 @@ export function Domains({
                 });
                 await refresh();
                 setCreating(false);
-              }, "Domain provisioning requested");
+              }, "Public address requested");
             }}
           >
             <div className="grid gap-4 sm:grid-cols-2">
               <Field label="Service">
                 <Select required name="service_id">
-                  <option value="">Select a healthy service</option>
-                  {services
-                    .filter(
-                      (s) => s.status === "healthy" || s.status === "running",
-                    )
-                    .map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {data.projects.find((p) => p.id === s.project_id)?.name}{" "}
-                        / {s.name} : {s.port}
-                      </option>
-                    ))}
+                  <option value="">Choose a service</option>
+                  {eligible.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {data.projects.find((p) => p.id === s.project_id)?.name} /{" "}
+                      {s.name} : {s.port}
+                    </option>
+                  ))}
                 </Select>
               </Field>
-              <Field
-                label="Hostname"
-                hint="Use a hostname in your connected Cloudflare zone. We configure the tunnel, DNS, and HTTPS."
-              >
-                <Input
-                  name="hostname"
-                  required
-                  placeholder="app.example.com"
-                  pattern="[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
-                />
-              </Field>
+              <HostnameField data={data} defaultLabel={suggested} />
             </div>
-            <Submit busy={action.busy}>Expose service</Submit>
+            <Submit busy={action.busy}>Add public address</Submit>
           </form>
         )}
-        {domains.map((d) => (
-          <div className={rowClass} key={d.id}>
-            <StatusDot status={d.status ?? "pending"} />
-            <a
-              href={`https://${d.hostname}`}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1 text-sm font-medium hover:underline"
-            >
-              {d.hostname}
-              <ExternalLink className="size-3 text-muted-foreground" />
-            </a>
-            <Meta>
-              routes to{" "}
-              {data.services.find((s) => s.id === d.service_id)?.name ??
-                d.service_id}
-            </Meta>
-            <Badge variant={statusVariant(d.status)} className="capitalize">
-              {d.status ?? "Provisioning"}
-            </Badge>
-            <div className="ml-auto">
-              <Button
-                size="xs"
-                variant="destructive"
-                disabled={action.busy || !live}
-                onClick={() => {
-                  if (
-                    confirm(
-                      `Remove public routing for ${d.hostname}? The service keeps running.`,
-                    )
-                  )
-                    void action.run(async () => {
-                      await api(`/domains/${d.id}`, undefined, "DELETE");
-                      await refresh();
-                    }, "Domain removed");
-                }}
+        {domains.map((d) => {
+          const service = data.services.find((s) => s.id === d.service_id),
+            project = data.projects.find((p) => p.id === service?.project_id);
+          return (
+            <div className={rowClass} key={d.id}>
+              <StatusDot status={d.status ?? "pending"} />
+              <a
+                href={`https://${d.hostname}`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-sm font-medium hover:underline"
               >
-                Remove
-              </Button>
+                {d.hostname}
+                <ExternalLink className="size-3 text-muted-foreground" />
+              </a>
+              <Meta>
+                → {project ? `${project.name} / ` : ""}
+                {service?.name ?? d.service_id}
+              </Meta>
+              <Badge variant={statusVariant(d.status)} className="capitalize">
+                {d.status ?? "Provisioning"}
+              </Badge>
+              <div className="ml-auto">
+                <Button
+                  size="xs"
+                  variant="destructive"
+                  disabled={action.busy || !live}
+                  onClick={() => {
+                    if (
+                      confirm(
+                        `Remove public routing for ${d.hostname}? The service keeps running.`,
+                      )
+                    )
+                      void action.run(async () => {
+                        await api(`/domains/${d.id}`, undefined, "DELETE");
+                        await refresh();
+                      }, "Public address removed");
+                  }}
+                >
+                  Remove
+                </Button>
+              </div>
+              {d.error && (
+                <p className="basis-full text-xs text-destructive">{d.error}</p>
+              )}
             </div>
-            {d.error && (
-              <p className="basis-full text-xs text-destructive">{d.error}</p>
-            )}
-          </div>
-        ))}
-        {!domains.length && !creating && (
+          );
+        })}
+        {!domains.length && !creating && !hasCloudflare && (
           <EmptyState
             icon={<Globe />}
-            title="Give your service an address"
-            description="Deploy a healthy service, then expose it through your connected Cloudflare domain."
+            title="Give your app an address"
+            description="Once a service is healthy, add a public address here."
           />
         )}
       </CardContent>

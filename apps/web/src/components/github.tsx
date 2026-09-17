@@ -63,6 +63,60 @@ function GitHubGlyph({ className }: { className?: string }) {
     </svg>
   );
 }
+/**
+ * GitHub's public avatar for a user or organization. Loaded straight from
+ * GitHub so it is always their current picture; falls back to the glyph
+ * when the account is private, renamed, or offline.
+ */
+export function GitHubAvatar({
+  login,
+  size = 32,
+  className,
+}: {
+  login: string;
+  size?: number;
+  className?: string;
+}) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [login]);
+  return (
+    <span
+      className={cn(
+        "relative flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-muted ring-1 ring-border",
+        className,
+      )}
+      style={{ width: size, height: size }}
+    >
+      {failed ? (
+        <GitHubGlyph className="size-1/2 text-muted-foreground" />
+      ) : (
+        <img
+          src={`https://github.com/${encodeURIComponent(login)}.png?size=${size * 2}`}
+          width={size}
+          height={size}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          referrerPolicy="no-referrer"
+          onError={() => setFailed(true)}
+          className="size-full object-cover"
+        />
+      )}
+    </span>
+  );
+}
+const ACCOUNT_KIND = {
+  Organization: "Organization",
+  User: "Personal",
+} as const;
+function accountKind(type: string) {
+  return type === "Organization" ? ACCOUNT_KIND.Organization : ACCOUNT_KIND.User;
+}
+function installationUrl(i: Installation) {
+  return i.account_type === "Organization"
+    ? `https://github.com/organizations/${encodeURIComponent(i.account_login)}/settings/installations/${i.id}`
+    : `https://github.com/settings/installations/${i.id}`;
+}
 export function GitHubSignIn() {
   const [loadFailed, setLoadFailed] = useState(false);
   const [status, setStatus] = useState<{
@@ -232,13 +286,28 @@ export function GitHubAppPanel({
             </>
           ) : (
             <>
-              <div className="gh-surface flex items-center gap-3 rounded-lg px-3 py-2.5">
-                <GitHubGlyph className="size-5 text-muted-foreground" />
+              <div className="gh-surface relative flex items-center gap-3 overflow-hidden rounded-lg px-3 py-3">
+                {status.identity ? (
+                  <GitHubAvatar login={status.identity.login} size={40} className="ring-2 ring-primary/40" />
+                ) : (
+                  <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-muted">
+                    <GitHubGlyph className="size-5 text-muted-foreground" />
+                  </span>
+                )}
                 <div className="flex min-w-0 flex-col">
-                  <span className="truncate text-sm font-medium">
-                    {status.identity
-                      ? `@${status.identity.login}`
-                      : status.name || "GitHub App registered"}
+                  <span className="flex items-center gap-1.5 truncate text-sm font-medium">
+                    {status.identity ? (
+                      <a
+                        href={`https://github.com/${encodeURIComponent(status.identity.login)}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="truncate hover:underline"
+                      >
+                        {status.identity.login}
+                      </a>
+                    ) : (
+                      status.name || "GitHub App registered"
+                    )}
                   </span>
                   <span className="text-xs text-muted-foreground">
                     {status.identity
@@ -246,16 +315,21 @@ export function GitHubAppPanel({
                       : "Link the account you’ll use to sign in"}
                   </span>
                 </div>
-                <Badge
-                  variant={status.user_connected ? "green" : "blank"}
-                  className="ml-auto"
-                >
+                <span className="ml-auto flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
+                  <span
+                    className={cn(
+                      "size-1.5 rounded-full",
+                      status.user_connected
+                        ? "bg-primary shadow-[0_0_6px_var(--color-primary)]"
+                        : "bg-muted-foreground/50",
+                    )}
+                  />
                   {status.user_connected
                     ? "linked"
                     : status.identity
                       ? "reconnect"
                       : "not linked"}
-                </Badge>
+                </span>
               </div>
               {!status.identity || !status.user_connected ? (
                 <>
@@ -330,11 +404,12 @@ export function GitHubAppPanel({
                   <h3 className="text-sm font-medium">Repository accounts for this workspace</h3>
                   <p className="text-xs text-muted-foreground">Choose existing GitHub App installations to connect here. Access in your other workspaces stays unchanged.</p>
                 </div>
-                {available.length === 0 ? <p className="text-xs text-muted-foreground">No available installations. Use Choose repositories to install the app on your account or organization.</p> : available.map(installation => <label key={installation.id} className="flex items-center gap-3 text-sm">
+                {available.length === 0 ? <p className="text-xs text-muted-foreground">No available installations. Use Choose repositories to install the app on your account or organization.</p> : available.map(installation => <label key={installation.id} className="gh-interactive flex cursor-pointer items-center gap-3 rounded-md px-2 py-1.5 text-sm">
                   <input type="checkbox" className="size-4 shrink-0 accent-primary" checked={chosen.includes(installation.id)} disabled={action.busy}
                     onChange={event => setChosen(current => event.target.checked ? [...current, installation.id] : current.filter(id => id !== installation.id))} />
-                  <span className="min-w-0 break-all">{installation.account_login}</span>
-                  <Badge variant="blank">{installation.account_type === "Organization" ? "Organization" : "Personal"}</Badge>
+                  <GitHubAvatar login={installation.account_login} size={24} />
+                  <span className="min-w-0 truncate font-medium">{installation.account_login}</span>
+                  <Meta>{accountKind(installation.account_type)}</Meta>
                 </label>)}
                 <div className="flex flex-wrap gap-2">
                   <Button size="sm" disabled={action.busy || available.length === 0} onClick={() => {
@@ -349,39 +424,30 @@ export function GitHubAppPanel({
               </section>}
               {status.installations.length > 0 && (
                 <ul
-                  className="flex flex-col gap-2"
+                  className="gh-surface divide-y divide-border overflow-hidden rounded-lg"
                   aria-label="Connected GitHub accounts"
                 >
                   {status.installations.map((i) => (
-                    <li
-                      key={i.id}
-                      className="gh-interactive flex flex-wrap items-center gap-3 rounded-md border border-border px-3 py-2"
-                    >
-                      <span className="text-sm font-medium">
-                        {i.account_login}
-                      </span>
-                      <Badge variant="blank">
-                        {i.account_type === "Organization"
-                          ? "Organization"
-                          : "Personal"}
-                      </Badge>
-                      <Meta>
-                        {i.repository_selection === "all"
-                          ? "all repositories"
-                          : "selected repositories"}
-                      </Meta>
+                    <li key={i.id}>
                       <a
-                        className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground hover:underline"
-                        href={
-                          i.account_type === "Organization"
-                            ? `https://github.com/organizations/${encodeURIComponent(i.account_login)}/settings/installations/${i.id}`
-                            : `https://github.com/settings/installations/${i.id}`
-                        }
+                        href={installationUrl(i)}
                         target="_blank"
                         rel="noreferrer"
+                        className="gh-interactive group flex items-center gap-3 px-3 py-2.5"
                       >
-                        Manage
-                        <ExternalLink className="size-3" />
+                        <GitHubAvatar login={i.account_login} size={32} />
+                        <span className="flex min-w-0 flex-1 flex-col">
+                          <span className="truncate text-sm font-medium">{i.account_login}</span>
+                          <span className="truncate font-mono text-[11px] text-muted-foreground">
+                            {accountKind(i.account_type)}
+                            {" · "}
+                            {i.repository_selection === "all" ? "all repositories" : "selected repositories"}
+                          </span>
+                        </span>
+                        <span className="flex items-center gap-1 font-mono text-[11px] text-muted-foreground transition-colors group-hover:text-foreground">
+                          manage
+                          <ExternalLink className="size-3" />
+                        </span>
                       </a>
                     </li>
                   ))}

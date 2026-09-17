@@ -482,7 +482,7 @@ export async function handleAuth(
     )
       .bind(githubId)
       .first<{ id: string }>();
-    if (!user) fail(404, "This person must sign in to Personal Cloud first");
+    if (!user) fail(404, "This person must sign in to dinghy first");
     await env.DIRECTORY.prepare(
       "INSERT OR IGNORE INTO memberships (workspace_id,user_id,role,created_at) VALUES (?,?,'member',?)",
     )

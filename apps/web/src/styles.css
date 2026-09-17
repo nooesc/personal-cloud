@@ -1,5 +1,4 @@
 @import "@fontsource-variable/geist";
-@import "@fontsource-variable/geist-mono";
 @import "tailwindcss";
 
 @custom-variant dark (&:is(.dark *));
@@ -8,10 +7,12 @@
 	--font-sans:
 		"Geist Variable", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
 		"Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
-	--font-mono:
-		"Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-		monospace;
 	--font-heading: var(--font-sans);
+
+	--container-2xl: 40rem;
+	--container-8xl: 85rem;
+	--container-9xl: 95rem;
+	--container-10xl: 105rem;
 
 	--breakpoint-3xl: 1920px;
 
@@ -180,22 +181,17 @@ html.dark {
 	::before,
 	::backdrop,
 	::file-selector-button {
-		border-color: var(--border);
+		border-color: var(--color-gray-200, currentcolor);
 	}
 	* {
-		@apply outline-ring/50;
+		@apply border-border outline-ring/50;
 	}
 	body {
 		@apply bg-background text-foreground font-sans;
-		font-synthesis: none;
-		-webkit-font-smoothing: antialiased;
 	}
 	button:not([disabled]),
 	[role="button"]:not([disabled]) {
 		cursor: pointer;
-	}
-	svg {
-		flex-shrink: 0;
 	}
 }
 
@@ -248,6 +244,7 @@ html.dark {
 [data-slot="dialog-content"],
 [data-slot="popover-content"],
 [data-slot="dropdown-menu-content"],
+[data-slot="dropdown-menu-sub-content"],
 [data-slot="select-content"],
 [data-slot="command"] {
 	background-color: var(--popover);
@@ -256,6 +253,10 @@ html.dark {
 	--tw-shadow:
 		0 1px 0 rgb(255 255 255 / 3%) inset,
 		0 16px 40px rgb(0 0 0 / 24%);
+}
+[data-slot="sheet-content"] {
+	border-color: var(--border);
+	box-shadow: 0 16px 40px rgb(0 0 0 / 24%);
 }
 [data-slot="tooltip-content"] {
 	border-radius: var(--radius-md);
@@ -270,7 +271,7 @@ html.dark {
 	background-size: 100% 100%;
 }
 
-/* Native <dialog> keeps platform focus trapping; the backdrop matches shadcn's overlay. */
+/* Native <dialog> keeps platform focus trapping; the backdrop matches shadcn's overlay (bg-black/10 + backdrop-blur-xs). */
 dialog[data-slot="dialog-content"] {
 	border: 1px solid var(--border);
 	box-shadow:
@@ -279,7 +280,7 @@ dialog[data-slot="dialog-content"] {
 }
 dialog[data-slot="dialog-content"]::backdrop {
 	background: rgb(0 0 0 / 10%);
-	backdrop-filter: blur(2px);
+	backdrop-filter: blur(4px);
 }
 dialog[data-slot="dialog-content"][open] {
 	animation: dialog-in 100ms ease-out;
@@ -405,10 +406,35 @@ dialog[data-slot="dialog-content"][open] {
 }
 
 /* -- controls ----------------------------------------------------------- */
+/*
+  Tighter default control heights. Matched on the component's stock size class
+  (`h-10`, …): `cn()` runs tailwind-merge, so a caller that passes its own
+  `h-8` drops the stock token and opts out.
+*/
+[data-slot="button"][data-size="default"][class~="h-10"],
+[data-slot="input"][class~="h-10"],
+[data-slot="select-trigger"][data-size="default"]:not([class*=" h-"]) {
+	height: 2.25rem;
+}
+[data-slot="button"][data-size="sm"][class~="h-9"],
+[data-slot="select-trigger"][data-size="sm"]:not([class*=" h-"]) {
+	height: 2rem;
+}
+[data-slot="button"][data-size="icon"][class~="size-10"] {
+	height: 2.25rem;
+	width: 2.25rem;
+}
+[data-slot="button"][data-size="icon-sm"][class~="size-9"] {
+	height: 2rem;
+	width: 2rem;
+}
 /* 150ms motion on interactive primitives. */
 [data-slot="button"],
 [data-slot="badge"],
 [data-slot="dropdown-menu-item"],
+[data-slot="dropdown-menu-checkbox-item"],
+[data-slot="dropdown-menu-radio-item"],
+[data-slot="dropdown-menu-sub-trigger"],
 [data-slot="select-item"],
 [data-slot="command-item"] {
 	transition-property: background-color, border-color, color, box-shadow, opacity, transform;
@@ -425,7 +451,6 @@ dialog[data-slot="dialog-content"][open] {
 [data-slot="tabs-trigger"]:focus-visible,
 [data-slot="badge"]:focus-visible {
 	--tw-ring-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 40%, transparent);
-	box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 40%, transparent);
 	outline: none;
 }
 /* Primary buttons: flat, no translucent border, quiet hover. */
@@ -460,7 +485,7 @@ dialog[data-slot="dialog-content"][open] {
 
 @utility custom-logs-scrollbar {
 	scrollbar-width: thin;
-	scrollbar-color: var(--muted-foreground) transparent;
+	scrollbar-color: var(--muted) transparent;
 	&::-webkit-scrollbar {
 		width: 8px;
 		height: 8px;
@@ -469,22 +494,37 @@ dialog[data-slot="dialog-content"][open] {
 		background: transparent;
 	}
 	&::-webkit-scrollbar-thumb {
-		background-color: color-mix(in srgb, var(--muted-foreground) 30%, transparent);
+		background-color: var(--muted);
 		border-radius: 20px;
 	}
 	&::-webkit-scrollbar-thumb:hover {
-		background-color: color-mix(in srgb, var(--muted-foreground) 50%, transparent);
+		background-color: var(--muted);
 	}
 }
 
-@media (prefers-reduced-motion: reduce) {
-	*,
-	*::before,
-	*::after {
-		animation-duration: 0.01ms !important;
-		animation-iteration-count: 1 !important;
-		transition-duration: 0.01ms !important;
-		scroll-behavior: auto !important;
+@utility no-scrollbar {
+	&::-webkit-scrollbar {
+		display: none;
 	}
+	-ms-overflow-style: none;
+	scrollbar-width: none;
 }
 /* ===== /dinghy: grep-hound theme ===== */
+/* A one-beat ring that says "here": set by the project page when a stat is clicked. */
+@keyframes spotlight {
+	0% {
+		box-shadow: 0 0 0 0 color-mix(in oklch, var(--primary) 55%, transparent);
+	}
+	100% {
+		box-shadow: 0 0 0 10px transparent;
+	}
+}
+.spotlight {
+	animation: spotlight 1s cubic-bezier(0.16, 1, 0.3, 1) 1;
+}
+@media (prefers-reduced-motion: reduce) {
+	.spotlight {
+		animation: none;
+		box-shadow: 0 0 0 2px color-mix(in oklch, var(--primary) 55%, transparent);
+	}
+}

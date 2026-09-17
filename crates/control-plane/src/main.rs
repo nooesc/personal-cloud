@@ -183,7 +183,7 @@ async fn main() -> anyhow::Result<()> {
         .with_state(app);
     let address = env::var("PC_BIND").unwrap_or("127.0.0.1:4311".into());
     let listener = tokio::net::TcpListener::bind(&address).await?;
-    tracing::info!(%address,"Personal Cloud control plane ready");
+    tracing::info!(%address,"dinghy control plane ready");
     use std::future::IntoFuture;
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let server = axum::serve(listener, router)
@@ -287,13 +287,18 @@ async fn snapshot(app: &App) -> ApiResult<Value> {
     )
     .fetch_all(&app.db)
     .await?;
+    let database_bindings: Vec<Value> = sqlx::query_scalar(
+        "SELECT to_jsonb(b) FROM service_database_bindings b ORDER BY service_id",
+    )
+    .fetch_all(&app.db)
+    .await?;
     let domains: Vec<Value> =
         sqlx::query_scalar("SELECT to_jsonb(d) FROM domains d ORDER BY created_at")
             .fetch_all(&app.db)
             .await?;
     let integrations = integrations::status(app).await?;
     Ok(
-        json!({"machines":machines,"projects":projects,"services":services,"deployments":deployments,"databases":databases,"domains":domains,"activity":activity,"integrations":integrations,"generated_at":Utc::now()}),
+        json!({"machines":machines,"projects":projects,"services":services,"deployments":deployments,"databases":databases,"database_bindings":database_bindings,"domains":domains,"activity":activity,"integrations":integrations,"generated_at":Utc::now()}),
     )
 }
 async fn get_snapshot(State(app): State<App>, headers: HeaderMap) -> ApiResult<Json<Value>> {
@@ -499,13 +504,20 @@ async fn heartbeat(
         return Err(unauthorized());
     }
     // One row per heartbeat (10 s); a day of retention bounds the table at ~8.6k rows per machine.
+    // `containers` is the services currently placed on this machine — the closest observed analogue.
     sqlx::query(
-        "INSERT INTO machine_samples(machine_id,cpu,mem,disk) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING",
+        "INSERT INTO machine_samples(machine_id,cpu,load,mem,mem_total,disk,disk_total,uptime,cpu_count,containers) \
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,(SELECT count(*) FROM services WHERE machine_id=$1)) ON CONFLICT DO NOTHING",
     )
     .bind(id)
     .bind(report.cpu_percent)
+    .bind(report.load_avg1)
     .bind(report.memory_used as i64)
+    .bind(report.memory_total as i64)
     .bind(report.disk_used as i64)
+    .bind(report.disk_total as i64)
+    .bind(report.uptime_sec.map(|v| v as i64))
+    .bind(report.cpu_cores as i32)
     .execute(&mut *tx)
     .await?;
     sqlx::query(
@@ -518,32 +530,81 @@ async fn heartbeat(
     app.events.send(()).ok();
     Ok(Json(json!({"ok":true})))
 }
-/// Last hour of vitals per machine, oldest first, for the fleet charts.
+/// Last hour of vitals for every machine, oldest first. Shape matches the fleet dashboard's
+/// `hosts[].samples[]` contract: a machine without heartbeats in 45 s is `unreachable`.
 async fn fleet_history(State(app): State<App>, headers: HeaderMap) -> ApiResult<Json<Value>> {
     owner(&app, &headers).await?;
     let since = Utc::now() - Duration::from_secs(3600);
+    let machines = sqlx::query(
+        "SELECT id, report->>'hostname' AS name, report->>'private_ip' AS ip, last_seen, \
+         EXTRACT(EPOCH FROM now()-last_seen)::bigint AS silent_for FROM machines ORDER BY created_at",
+    )
+    .fetch_all(&app.db)
+    .await?;
     let rows = sqlx::query(
-        "SELECT machine_id, at, cpu, mem, disk FROM machine_samples WHERE at >= $1 ORDER BY machine_id, at",
+        "SELECT machine_id, at, cpu, load, mem, mem_total, disk, disk_total, uptime, cpu_count, containers \
+         FROM machine_samples WHERE at >= $1 ORDER BY at",
     )
     .bind(since)
     .fetch_all(&app.db)
     .await?;
-    let mut machines = serde_json::Map::new();
+    let mut samples: std::collections::HashMap<Uuid, Vec<Value>> = std::collections::HashMap::new();
     for row in rows {
-        let id: Uuid = row.get("machine_id");
         let at: DateTime<Utc> = row.get("at");
-        let point = json!({"at":at,"cpu":row.get::<f32,_>("cpu"),"mem":row.get::<i64,_>("mem"),"disk":row.get::<i64,_>("disk")});
-        match machines
-            .entry(id.to_string())
-            .or_insert_with(|| Value::Array(Vec::new()))
-        {
-            Value::Array(points) => points.push(point),
-            _ => unreachable!(),
-        }
+        samples
+            .entry(row.get("machine_id"))
+            .or_default()
+            .push(json!({
+                "t": at.timestamp_millis(),
+                "cpuPercent": row.get::<f32,_>("cpu"),
+                "loadAvg1": row.get::<Option<f32>,_>("load"),
+                "memUsedBytes": row.get::<i64,_>("mem"),
+                "memTotalBytes": row.get::<i64,_>("mem_total"),
+                "diskUsedBytes": row.get::<i64,_>("disk"),
+                "diskTotalBytes": row.get::<i64,_>("disk_total"),
+                "uptimeSec": row.get::<Option<i64>,_>("uptime"),
+                "cpuCount": row.get::<i32,_>("cpu_count"),
+                "containerCount": row.get::<i32,_>("containers"),
+            }));
     }
+    let hosts: Vec<Value> = machines
+        .into_iter()
+        .map(|m| {
+            let id: Uuid = m.get("id");
+            let silent: i64 = m.get("silent_for");
+            let samples = samples.remove(&id).unwrap_or_default();
+            let latest = samples.last().cloned();
+            let (status, error) = if silent > 45 {
+                (
+                    "unreachable",
+                    Some(format!("no heartbeat for {}", human_duration(silent))),
+                )
+            } else if latest.is_some() {
+                ("ok", None)
+            } else {
+                ("pending", None)
+            };
+            json!({
+                "hostKey": id, "serverId": id,
+                "name": m.get::<Option<String>,_>("name").unwrap_or_else(|| id.to_string()),
+                "aliases": [], "ipAddress": m.get::<Option<String>,_>("ip"),
+                "status": status, "error": error,
+                "latest": if status == "ok" { latest } else { None },
+                "samples": samples,
+            })
+        })
+        .collect();
     Ok(Json(
-        json!({"since":since,"step_seconds":10,"machines":machines}),
+        json!({"pollMs":10_000,"maxSamples":360,"hosts":hosts}),
     ))
+}
+fn human_duration(seconds: i64) -> String {
+    match seconds {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m", s / 60),
+        s if s < 86_400 => format!("{}h {}m", s / 3600, (s % 3600) / 60),
+        s => format!("{}d {}h", s / 86_400, (s % 86_400) / 3600),
+    }
 }
 async fn events(
     State(app): State<App>,

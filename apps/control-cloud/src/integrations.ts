@@ -628,6 +628,7 @@ async function reconcileDomain(
     });
     ctx.broadcast();
   } catch (error) {
+    console.warn("Domain reconciliation pending", domain.id, error instanceof Error ? error.message : "Unknown error");
     ctx.store.put("domains", domain.id, {
       ...(ctx.store.get<Doc>("domains", domain.id) ?? domain),
       status: domain.status === "deleting" ? "deleting" : "pending",

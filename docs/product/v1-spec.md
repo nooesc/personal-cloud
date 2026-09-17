@@ -1,4 +1,4 @@
-## Personal Cloud Platform — V1 Spec
+## dinghy Platform — V1 Spec
 
 ### 1. Product
 
@@ -624,3 +624,26 @@ should go from **zero → personal cloud → deployed application** in under **1
 And afterward they should never need to open the Cloudflare, Nomad, or Docker dashboards.
 
 That's the product.
+
+## Hosted edition: project organization (September 2026)
+
+For the hosted edition, a **Project** is now the home for an application, rather than
+requiring a GitHub repository. It may contain linked Cloudflare Workers/Pages, fleet
+services, or both. A repository is optional until the user wants to build machine
+services. Existing fleet deployment and stateful workload contracts remain unchanged.
+
+Connecting a Cloudflare inventory account offers a resumable organization flow:
+review suggested project/environment groups, edit them, and save in one batch.
+Unassigned and ignored resources remain accessible. Name-based suggestions are guesses
+until accepted. Project views combine saved associations with observed provider data;
+missing or unavailable data never implies serving health.
+
+Use existing resources first. Organization does not provision anything, adopt a deployment
+pipeline, change provider billing, or require a paid plan. Additional infrastructure is
+optional and belongs to the project that needs it. Paid provisioning, verified quota
+budgets, and shared database/bucket relationships are future capabilities, not controls
+implemented by this organization flow.
+
+## Native macOS fleet extension
+
+Nomad remains the sole fleet workload scheduler, including native macOS development services and Apple build/test tasks. macOS uses an explicitly enabled raw_exec client and a non-root user; Linux container workloads retain their existing drivers. Dinghy may store job history and reconcile provider state, but must not introduce a separate machine work-claiming queue. Native readiness requires observed Nomad node eligibility and driver capability, not inventory alone.

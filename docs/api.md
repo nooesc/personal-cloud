@@ -49,6 +49,67 @@ Every authenticated workspace request is routed to that workspace's Durable Obje
 
 `POST /api/registry/credentials` returns that workspace's scoped OCI credentials. `/v2/` is the managed registry backed by R2. The operator-only `/api/operator/import` endpoint is disabled unless `MIGRATION_TOKEN` is configured. See [hosted setup](cloudflare-hosted.md) and [migration](hosted-migration.md) for deployment and supported migration boundaries.
 
+### Hosted readiness additions
+
+- `GET /api/snapshot` includes `readiness`: status (`ready`, `blocked`, `checking`), observation time, connected/run/build counts, machine capabilities, actionable blockers, and recommended enrollment roles. Missing readiness on older/self-hosted servers means unknown, never implicitly ready.
+- Snapshot `enrollments` contains only `{id, expires_at, status, machine_id}` for active/recent enrollment attempts; secret tokens and token hashes are never included.
+- `GET /api/services/:id/preflight` returns the readiness shape plus `service_id`, validating service placement/architecture and, after fleet prerequisites pass, its selected GitHub repository/branch.
+- An interactive source `POST /api/services/:id/deploy` that fails preflight returns `409` or `503` with `{error, readiness}` and creates no deployment. Actual job reconciliation remains authoritative. Rollback/image and webhook flows preserve their existing validation/history.
+- Hosted enrollment accepts omitted metadata with recommended roles, `home` location and empty tags. Hosted service creation accepts an omitted port as `3000`. These are explicit defaults, not automatic framework or network detection.
+- `DELETE /api/enrollment-tokens/:id` revokes an unused hosted enrollment command in the current workspace. It is safe to retry, removes the waiting entry, and rejects already-connected grants with `409`; it never disconnects a machine. A revoked token cannot enroll even if its request was routed before directory cleanup.
+
+#### Hosted Cloudflare inventory
+
+- `GET /api/integrations/cloudflare/overview`: workspace-only Workers/Pages inventory,
+  24-hour Worker request/error/subrequest counts, provider issues, and observation time.
+  Cached for 60 seconds. Returns `not_connected`, `connected`, `partial`, or `error`;
+  unavailable metrics are null. This does not expose platform-wide credentials/resources.
+- `POST /api/integrations/cloudflare/account`: `{account_id, api_token}`. Validates read
+  access before encrypting and replacing the optional workspace inventory connection.
+  A failed validation preserves the previous connection.
+- `DELETE /api/integrations/cloudflare/account`: disconnects inventory, clears cached
+  observations, and suppresses imported-credential fallback. Domain hosting is unaffected.
+
+All three require an authenticated workspace member; machine credentials cannot use them.
+
+#### Hosted project organization
+
+`GET /api/snapshot` advertises `capabilities.project_organization: true` and adds
+`project_resources`. Older/self-hosted backends omit the capability; clients must
+keep their existing project workflow there.
+
+- `POST /api/projects` accepts `{name, repository?, branch?}`. Without a repository,
+  a project is an organization container and does not need machines or GitHub access.
+  The stored `repository` is an empty string; `branch` defaults to `main`.
+- `PATCH /api/projects/:id` accepts `{name?, repository?, branch?}`. This can attach a
+  repository later. Source/branch changes are rejected while machine services exist.
+  Adding a machine service still requires a repository and deployment still checks readiness.
+- Cloudflare overview/account responses add `organization: {revision, resources}`.
+  Records contain `id, account_id, kind, name, project_id, environment, ignored,
+  updated_at`. Kind is `worker` or `pages`. Environment is `production`, `development`,
+  `staging`, or `preview`. Overview records belong only to its current account;
+  snapshot records retain associations from previously connected accounts.
+- `POST /api/integrations/cloudflare/organize` accepts `{account_id, revision,
+  assignments}`. Each assignment contains `{kind, name, environment?, project_id?,
+  project_name?, ignored?}`. Select an existing project by ID or create/reuse a project
+  by case-insensitive exact name. Ambiguous names require an ID. Omitting both project
+  selectors unassigns; `ignored: true` hides an unassigned resource. Ignore and project
+  assignment are mutually exclusive. One batch accepts up to 1,100 resources.
+- Save returns `{projects, organization}`. All rows validate before a synchronous
+  transaction. Stale revisions/account changes return `409`; foreign project IDs
+  return `404`. New assignments require observed inventory. Existing metadata can be
+  released when the provider no longer returns the resource.
+
+Organization never renames, deploys, provisions, upgrades, or deletes provider resources.
+Deleting a dinghy project releases its Cloudflare associations only. Credentials remain
+workspace-encrypted; grouping suggestions are client-side hypotheses, never source or
+billing claims. Existing provider plans and billing continue independently of grouping.
+
+Explicit unassignment is persisted as `project_id: null, ignored: false`, so a later
+organization session respects that choice instead of silently suggesting reassignment
+as part of an unrelated save. Removing a project clears its resource `project_id` and
+preserves these unassigned records. Never-touched discovered resources have no record.
+
 ### Hosted PostgreSQL backups
 
 These routes require workspace membership. They are specific to the hosted edition.

@@ -1,3 +1,4 @@
+import { releaseProjectResources } from "./project-organization";
 import {
   body,
   fail,
@@ -8,6 +9,7 @@ import {
   type Doc,
   type WorkspaceContext,
 } from "./core";
+import { servicePreflight } from "./preflight";
 import { registryCredentials } from "./integrations";
 import {
   ACTIVE,
@@ -63,6 +65,7 @@ export async function runtimeStatus(ctx: WorkspaceContext): Promise<Doc> {
         Name: n.Name,
         Status: n.Status,
         SchedulingEligibility: n.SchedulingEligibility,
+        Drain: n.Drain,
         Attributes: n.Attributes,
         Meta: n.Meta,
         NodeResources: n.NodeResources,
@@ -188,6 +191,16 @@ async function removeProject(
   projectId: string,
 ): Promise<Response> {
   const p = get(ctx, "projects", projectId);
+  if (
+    ctx.store
+      .list("apple_jobs")
+      .some(
+        (j) =>
+          j.project_id === projectId &&
+          ["queued", "running", "cancelling"].includes(j.status),
+      )
+  )
+    fail(409, "Stop active Apple jobs before removing this project");
   if (ctx.store.list("databases").some((d) => d.project_id === projectId))
     fail(
       409,
@@ -292,7 +305,7 @@ export async function handleRuntime(
   if (m && method === "GET")
     return json(publicDeployment(get(ctx, "deployments", m[1]!)));
   m =
-    /^\/api\/services\/([^/]+)(?:\/(deploy|rollback|logs|metrics|events))?$/.exec(
+    /^\/api\/services\/([^/]+)(?:\/(deploy|preflight|rollback|logs|metrics|events))?$/.exec(
       path,
     );
   if (m) {
@@ -309,8 +322,27 @@ export async function handleRuntime(
       await removeService(ctx, s.id);
       return json({ ok: true, status: "deleting" }, 202);
     }
-    if (m[2] === "deploy" && method === "POST")
-      return json(await queueDeployment(ctx, s.id, await body(request)), 202);
+    if (m[2] === "preflight" && method === "GET")
+      return json(await servicePreflight(ctx, s));
+    if (m[2] === "deploy" && method === "POST") {
+      const input = await body(request);
+      // Interactive builds fail early. Webhook reconciliation keeps its durable
+      // queued/failed history; immutable images keep their provenance path.
+      if (!input.image && ctx.userId !== "system") {
+        const preflight = await servicePreflight(ctx, s);
+        if (preflight.status !== "ready")
+          return json(
+            {
+              error:
+                preflight.blockers[0]?.message ??
+                "Deployment prerequisites are not ready.",
+              readiness: preflight,
+            },
+            preflight.status === "checking" ? 503 : 409,
+          );
+      }
+      return json(await queueDeployment(ctx, s.id, input), 202);
+    }
     if (m[2] === "rollback" && method === "POST") {
       const input = await body(request),
         previous = get(ctx, "deployments", input.deployment_id);
@@ -453,6 +485,7 @@ export async function reconcileRuntime(ctx: WorkspaceContext): Promise<void> {
           .list("environment")
           .filter((v) => v.project_id === p.id))
           ctx.store.delete("environment", row.id);
+        releaseProjectResources(ctx, p.id);
         ctx.store.delete("projects", p.id);
       });
   }

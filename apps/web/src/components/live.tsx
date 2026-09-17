@@ -1,8 +1,25 @@
 import { hosted } from "../lib/hosted";
 import { GitHubAppPanel } from "./github";
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useContext, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Check, ChevronRight, Copy, RefreshCw, Server, Trash2 } from "lucide-react";
-import { api, type Snapshot, type Service, type Machine, type Provider } from "../lib/data";
+import {
+  api,
+  platformZone,
+  providerStatus,
+  type MachineCapability,
+  type Snapshot,
+  type Service,
+  type Machine,
+} from "../lib/data";
+import {
+  capabilityLabel,
+  capabilityOf,
+  MACHINE_STATE,
+  ReadinessActions,
+  ReadinessBadge,
+  ReadinessSummary,
+  setupSteps,
+} from "./readiness";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
@@ -152,7 +169,7 @@ export function Secret({ value }: { value: string }) {
     </div>
   );
 }
-function Disclosure({
+export function Disclosure({
   title,
   defaultOpen,
   children,
@@ -182,9 +199,13 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
     </>
   );
 }
-function status(value: string | Provider | undefined) {
-  return typeof value === "string" ? value : (value?.status ?? "not_connected");
-}
+const RUNTIME_STATUS: Record<string, string> = {
+  not_configured: "Not set up yet — connect a Linux server",
+  connecting: "Checking…",
+  checking: "Checking…",
+  connected: "Connected",
+  unreachable: "Unreachable",
+};
 function StatusBadge({ status }: { status: string }) {
   const variant =
     status === "connected" || status === "ready" || status === "healthy"
@@ -202,15 +223,20 @@ export function Setup({
   live,
   signIn,
   signOut,
-  explore,
+  onAddMachine,
+  onNewProject,
+  onNavigate,
 }: {
   data: Snapshot;
   refresh: () => Promise<unknown>;
   live: boolean;
   signIn: () => void;
   signOut: () => void;
-  explore: () => void;
+  onAddMachine: () => void;
+  onNewProject: () => void;
+  onNavigate: (page: "Repositories" | "Machines" | "Settings") => void;
 }) {
+  const handlers = useContext(ReadinessActions);
   const action = useAction(),
     [runtime, setRuntime] = useState<Record<string, unknown>>({}),
     [discovery, setDiscovery] = useState<{
@@ -245,15 +271,16 @@ export function Setup({
     });
   }
   const signedIn = live && !!data.generated_at,
-    github = status(data.integrations.github),
-    cloudflare = status(data.integrations.cloudflare),
+    github = providerStatus(data.integrations.github),
+    cloudflare = providerStatus(data.integrations.cloudflare),
     runtimeStatus = String(runtime.status ?? "checking"),
-    checks: [string, boolean][] = [
-      ["GitHub", github === "connected"],
-      [hosted ? "Managed hosting" : "Cloudflare", cloudflare === "connected"],
-      ["Machine", data.machines.some((m) => m.status === "online")],
-      ["Application", data.services.some((s) => s.status === "healthy")],
-    ];
+    zone = platformZone(data),
+    counts = data.readiness?.counts,
+    steps = setupSteps(
+      data,
+      { hosted, onAddMachine, onNewProject, onNavigate },
+      handlers,
+    );
   return (
     <div className="grid gap-6 lg:grid-cols-2">
       <Card className="lg:col-span-2">
@@ -265,38 +292,47 @@ export function Setup({
           </CardDescription>
           <CardAction>
             <Badge variant={signedIn ? "green" : "blank"}>
-              {signedIn ? (hosted ? "signed in" : "owner signed in") : live ? "signed out" : "demo"}
+              {signedIn ? (hosted ? "signed in" : "owner signed in") : "signed out"}
             </Badge>
           </CardAction>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          <ol className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {checks.map(([label, done], i) => (
-              <li
-                key={label}
-                className="gh-surface flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm"
-              >
-                <span
-                  className={cn(
-                    "flex size-5 shrink-0 items-center justify-center rounded-full font-mono text-[11px] tabular-nums",
-                    done
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-muted text-muted-foreground",
-                  )}
+          <ol
+            className={cn(
+              "grid grid-cols-2 gap-2",
+              steps.length === 4 ? "sm:grid-cols-4" : "sm:grid-cols-3",
+            )}
+          >
+            {steps.map((step, i) => (
+              <li key={step.label} className="flex">
+                <button
+                  type="button"
+                  onClick={step.go}
+                  className="gh-surface gh-interactive flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-sm"
                 >
-                  {done ? <Check className="size-3" /> : i + 1}
-                </span>
-                {label}
+                  <span
+                    className={cn(
+                      "flex size-5 shrink-0 items-center justify-center rounded-full font-mono text-[11px] tabular-nums",
+                      step.done
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted text-muted-foreground",
+                    )}
+                  >
+                    {step.done ? <Check className="size-3" /> : i + 1}
+                  </span>
+                  <span className="flex min-w-0 flex-col">
+                    {step.label}
+                    {step.note && <Meta>{step.note}</Meta>}
+                  </span>
+                </button>
               </li>
             ))}
           </ol>
+          <ReadinessSummary readiness={data.readiness} />
           <div className="flex flex-wrap items-center gap-2">
             {!signedIn && <Button variant="outline" size="sm" onClick={signIn}>
               {hosted ? "Sign in with GitHub" : "Owner sign in"}
             </Button>}
-            <Button variant="link" size="sm" onClick={explore}>
-              Explore sample workspace
-            </Button>
             {signedIn && (
               <Button variant="link" size="sm" onClick={signOut}>
                 Sign out
@@ -390,16 +426,20 @@ export function Setup({
       </Card>
       <Card>
         <CardHeader>
-          <CardTitle>Cloudflare</CardTitle>
+          <CardTitle>{hosted ? "Domains and storage" : "Cloudflare"}</CardTitle>
           <CardDescription>
-            Your domains and private image storage, connected in one place.
+            {hosted
+              ? zone
+                ? `Public addresses under *.${zone} and private image storage, managed for you.`
+                : "Public addresses and private image storage, managed for you."
+              : "Your domains and private image storage, connected in one place."}
           </CardDescription>
           <CardAction>
             <StatusBadge status={cloudflare} />
           </CardAction>
         </CardHeader>
         <CardContent>
-          {hosted ? <p className="text-sm text-muted-foreground">Public application routes and artifact storage are managed by Personal Cloud. You do not need a Cloudflare account. Availability is shown above.</p> : <form
+          {hosted ? <p className="text-sm text-muted-foreground">Public application routes and artifact storage are managed by dinghy. You do not need a Cloudflare account. Availability is shown above.</p> : <form
             className="flex flex-col gap-4"
             onSubmit={(e) => save(e, "/integrations/cloudflare")}
           >
@@ -455,7 +495,7 @@ export function Setup({
             </div>
             <Section title="Image storage credentials">
               <p className="text-xs text-muted-foreground">
-                Use an R2 bucket and its S3 API credentials. Personal Cloud
+                Use an R2 bucket and its S3 API credentials. dinghy
                 configures the image registry for you.
               </p>
               <Field
@@ -485,37 +525,24 @@ export function Setup({
       </Card>
       <Card>
         <CardHeader>
-          <CardTitle>Cluster connection</CardTitle>
+          <CardTitle>{hosted ? "Fleet runtime" : "Cluster connection"}</CardTitle>
           <CardDescription>
             {hosted ? "Your first Linux machine coordinates your fleet through an outbound connection. Image storage is included; connect your repositories and machine to start deploying." : "Your first installed Linux machine connects automatically and coordinates your fleet. Connect Cloudflare, then set up image storage to start deploying."}
           </CardDescription>
           <CardAction>
-            <StatusBadge status={runtimeStatus} />
+            <ReadinessBadge readiness={data.readiness} />
           </CardAction>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           {runtime.error != null && (
             <Alert variant="destructive">{String(runtime.error)}</Alert>
           )}
-          <dl className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-1.5">
-            <dt className="text-xs text-muted-foreground">Status</dt>
-            <dd className="flex items-center gap-2">
-              <StatusDot status={runtimeStatus} />
-              <Meta>{runtimeStatus.replaceAll("_", " ")}</Meta>
-            </dd>
-            <dt className="text-xs text-muted-foreground">Scheduler</dt>
-            <dd>
-              <Meta className="break-all">
-                {String(runtime.nomad_url ?? "Not configured")}
-              </Meta>
-            </dd>
-            <dt className="text-xs text-muted-foreground">Registry</dt>
-            <dd>
-              <Meta className="break-all">
-                {String(runtime.registry_url ?? "Not configured")}
-              </Meta>
-            </dd>
-          </dl>
+          <div className="flex items-center gap-2" role="status">
+            <StatusDot status={runtimeStatus} />
+            <span className="text-sm">
+              {RUNTIME_STATUS[runtimeStatus] ?? runtimeStatus.replaceAll("_", " ")}
+            </span>
+          </div>
           {!hosted && <form
             key={String(runtime.nomad_url ?? "new")}
             className="flex flex-col gap-4"
@@ -612,6 +639,20 @@ export function Setup({
             </Button>}
           </div>
           <Disclosure title="Runtime diagnostics">
+            <dl className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-1.5">
+              <dt className="text-xs text-muted-foreground">Scheduler</dt>
+              <dd>
+                <Meta className="break-all">
+                  {String(runtime.nomad_url ?? "Not configured")}
+                </Meta>
+              </dd>
+              <dt className="text-xs text-muted-foreground">Registry</dt>
+              <dd>
+                <Meta className="break-all">
+                  {String(runtime.registry_url ?? "Not configured")}
+                </Meta>
+              </dd>
+            </dl>
             <pre className="max-h-60 overflow-auto rounded-lg bg-muted/40 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground">
               {JSON.stringify(runtime, null, 2)}
             </pre>
@@ -624,40 +665,44 @@ export function Setup({
           <CardDescription>
             Machines enrolled in this workspace and their private addresses.
           </CardDescription>
-          <CardAction>
-            <Badge
-              variant={
-                data.machines.some((m) => m.status === "online")
-                  ? "green"
-                  : "blank"
-              }
-            >
-              {data.machines.filter((m) => m.status === "online").length} of{" "}
-              {data.machines.length} online
+          <CardAction className="flex flex-col items-end gap-1">
+            <Badge variant={(counts?.connected ?? 0) > 0 ? "green" : "blank"}>
+              {counts?.connected ?? 0} of {data.machines.length} connected
             </Badge>
+            <Meta>
+              {counts ? `${counts.ready_to_run} ready to deploy` : "readiness unavailable"}
+            </Meta>
           </CardAction>
         </CardHeader>
         <CardContent className="flex flex-col gap-2">
           {data.machines.length ? (
-            data.machines.map((m) => (
-              <div
-                key={m.id}
-                className="gh-interactive flex flex-wrap items-center gap-3 rounded-md border border-border px-3 py-2"
-              >
-                <StatusDot status={m.status} />
-                <span className="text-sm font-medium">{m.report.hostname}</span>
-                <Badge variant="blank">{m.location}</Badge>
-                <Meta>{m.report.private_ip || "no private ip"}</Meta>
-                <Meta className="ml-auto">
-                  {m.roles.length ? m.roles.join(" · ") : "no roles"}
-                </Meta>
-              </div>
-            ))
+            data.machines.map((m) => {
+              const cap = capabilityOf(data, m.id);
+              return (
+                <div
+                  key={m.id}
+                  className="gh-interactive flex flex-wrap items-center gap-3 rounded-md border border-border px-3 py-2"
+                >
+                  <StatusDot status={cap ? MACHINE_STATE[cap.state].dot : "idle"} />
+                  <span className="text-sm font-medium">{m.report.hostname}</span>
+                  <Badge variant="blank">{m.location}</Badge>
+                  <Meta>{m.report.private_ip || "no private ip"}</Meta>
+                  <Badge variant="blank" className="ml-auto">
+                    {capabilityLabel(cap)}
+                  </Badge>
+                </div>
+              );
+            })
           ) : (
             <EmptyState
               icon={<Server />}
               title="No machines yet"
               description="Install the agent on a Linux machine to enroll it in your fleet."
+              action={
+                <Button size="sm" onClick={onAddMachine}>
+                  Add a machine
+                </Button>
+              }
               className="py-8"
             />
           )}
@@ -666,208 +711,26 @@ export function Setup({
     </div>
   );
 }
-export function RepositoryField({ live }: { live: boolean }) {
-  const [repos, setRepos] = useState<
-      { full_name: string; default_branch: string; private: boolean }[]
-    >([]),
-    [chosen, setChosen] = useState(""),
-    [branch, setBranch] = useState("main"),
-    [error, setError] = useState(""),
-    [loading, setLoading] = useState(live),
-    [manual, setManual] = useState(false);
-  useEffect(() => {
-    if (live)
-      api<{ repositories: typeof repos }>("/github/repositories")
-        .then((r) => setRepos(r.repositories))
-        .catch((e) => setError(e.message))
-        .finally(() => setLoading(false));
-  }, [live]);
-  const pick = repos.length > 0 && !manual;
-  return (
-    <>
-      <Field
-        label="GitHub repository"
-        hint={
-          error ? (
-            <>
-              {error} You can enter a repository manually after connecting
-              GitHub in Settings.
-            </>
-          ) : pick ? (
-            <button
-              type="button"
-              className="cursor-pointer text-left text-primary hover:underline"
-              onClick={() => setManual(true)}
-            >
-              Repository not listed? Enter it manually.
-            </button>
-          ) : undefined
-        }
-      >
-        {pick ? (
-          <Select
-            name="repository"
-            required
-            value={chosen}
-            onChange={(e) => {
-              setChosen(e.target.value);
-              const repo = repos.find((r) => r.full_name === e.target.value);
-              if (repo) setBranch(repo.default_branch);
-            }}
-          >
-            <option value="">Choose a repository</option>
-            {repos.map((r) => (
-              <option key={r.full_name} value={r.full_name}>
-                {r.full_name} · {r.private ? "Private" : "Public"}
-              </option>
-            ))}
-          </Select>
-        ) : (
-          <Input
-            name="repository"
-            required
-            pattern="[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
-            placeholder={loading ? "Loading repositories…" : "owner/repository"}
-            value={chosen}
-            onChange={(e) => {
-              setChosen(e.target.value);
-              const repo = repos.find((r) => r.full_name === e.target.value);
-              if (repo) setBranch(repo.default_branch);
-            }}
-          />
-        )}
-      </Field>
-      <Field label="Production branch">
-        <Input
-          name="branch"
-          required
-          value={branch}
-          onChange={(e) => setBranch(e.target.value)}
-        />
-      </Field>
-    </>
-  );
-}
-export function Placement({
-  data,
-  value,
-}: {
-  data: Snapshot;
-  value?: Service["placement"];
-}) {
-  return (
-    <Field label="Placement">
-      <Select
-        name="placement"
-        defaultValue={
-          value?.kind === "machine"
-            ? `machine:${value.machine_id}`
-            : (value?.kind ?? "automatic")
-        }
-      >
-        <option value="automatic">Automatic</option>
-        <option value="home">Home fleet</option>
-        <option value="vps">Cloud VPS</option>
-        {data.machines.map((m) => (
-          <option key={m.id} value={`machine:${m.id}`}>
-            {m.report.hostname} · {m.status}
-          </option>
-        ))}
-      </Select>
-    </Field>
-  );
-}
-export function serviceFields(form: FormData) {
-  const place = f(form, "placement");
-  return {
-    name: f(form, "name"),
-    port: Number(form.get("port")),
-    placement: place.startsWith("machine:")
-      ? { kind: "machine", machine_id: place.slice(8) }
-      : { kind: place },
-    root_directory: f(form, "root_directory") || ".",
-    health_path: f(form, "health_path") || "/",
-    cpu_mhz: Number(form.get("cpu_mhz") || 500),
-    memory_mb: Number(form.get("memory_mb") || 512),
-  };
-}
-export function ServiceFields({
-  data,
-  service,
-}: {
-  data: Snapshot;
-  service?: Service;
-}) {
-  return (
-    <div className="grid gap-4 sm:grid-cols-2">
-      <Field
-        label="Service name"
-        name="name"
-        value={service?.name}
-        required
-        placeholder="web"
-        className="sm:col-span-2"
-      />
-      <Field label="Listening port">
-        <Input
-          name="port"
-          type="number"
-          required
-          min={1}
-          max={65535}
-          defaultValue={service?.port ?? 3000}
-        />
-      </Field>
-      <Field
-        label="Health check path"
-        name="health_path"
-        value={service?.health_path ?? "/"}
-        required
-      />
-      <div className="sm:col-span-2">
-        <Placement data={data} value={service?.placement} />
-      </div>
-      <Eyebrow className="sm:col-span-2">Build and resources</Eyebrow>
-      <Field
-        label="Repository root directory"
-        name="root_directory"
-        value={service?.root_directory ?? "."}
-        className="sm:col-span-2"
-      />
-      <Field label="CPU (MHz)">
-        <Input
-          name="cpu_mhz"
-          type="number"
-          min={100}
-          max={128000}
-          defaultValue={service?.cpu_mhz ?? 500}
-        />
-      </Field>
-      <Field label="Memory (MB)">
-        <Input
-          name="memory_mb"
-          type="number"
-          min={64}
-          max={1048576}
-          defaultValue={service?.memory_mb ?? 512}
-        />
-      </Field>
-    </div>
-  );
-}
+const ROLE_DESCRIPTION: Record<string, string> = {
+  compute: "Run applications",
+  builder: "Build images from source",
+  database: "Host PostgreSQL",
+};
 export function MachineSettings({
   machine,
+  capability,
   refresh,
   onRemove,
 }: {
   machine: Machine;
+  /** Server-computed capability for this machine; undefined when readiness is unavailable. */
+  capability?: MachineCapability;
   refresh: () => Promise<unknown>;
   onRemove: () => void;
 }) {
   const action = useAction();
   const facts: [string, string][] = [
     ["Private IP", machine.report.private_ip || "Not reported"],
-    ["Scheduler node", machine.report.nomad_node_id || "Not reported"],
   ];
   if (machine.report.gpu != null)
     facts.push(["GPU", JSON.stringify(machine.report.gpu)]);
@@ -881,7 +744,21 @@ export function MachineSettings({
           Placement, roles, and tags used when scheduling workloads.
         </CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="flex flex-col gap-4">
+        {capability && (
+          <div
+            role="status"
+            className="gh-surface flex flex-col gap-1 rounded-lg px-3 py-2.5"
+          >
+            <span className="flex items-center gap-2 text-sm font-medium">
+              <StatusDot status={MACHINE_STATE[capability.state].dot} />
+              {capabilityLabel(capability)}
+            </span>
+            {capability.reasons.map((reason) => (
+              <Meta key={reason}>{reason}</Meta>
+            ))}
+          </div>
+        )}
         <form
           className="flex flex-col gap-4"
           onSubmit={(e) => {
@@ -921,20 +798,21 @@ export function MachineSettings({
           </div>
           <fieldset className="flex flex-col gap-2">
             <legend className="mb-1.5 text-sm leading-none font-medium">
-              Roles
+              What this machine may do
             </legend>
             <div className="flex flex-wrap gap-4">
               {["compute", "builder", "database"].map((role) => (
-                <label
-                  key={role}
-                  className="flex items-center gap-2 text-sm capitalize"
-                >
+                <label key={role} className="flex items-start gap-2 text-sm">
                   <Checkbox
                     name="roles"
                     value={role}
                     defaultChecked={machine.roles.includes(role)}
+                    className="mt-0.5"
                   />
-                  {role}
+                  <span className="flex flex-col">
+                    <span className="capitalize">{role}</span>
+                    <Meta>{ROLE_DESCRIPTION[role]}</Meta>
+                  </span>
                 </label>
               ))}
             </div>
@@ -954,7 +832,7 @@ export function MachineSettings({
           <Separator />
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-xs text-muted-foreground">
-              Drains workloads and removes the machine from the fleet.
+              Stops its applications and removes it from your cloud.
             </p>
             <Button
               variant="destructive"

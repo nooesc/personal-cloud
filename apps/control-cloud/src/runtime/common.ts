@@ -36,15 +36,29 @@ export function safeError(error: unknown): string {
 export async function nodes(ctx: WorkspaceContext): Promise<Doc[]> {
   const stubs = await ctx.requestNomad("GET", "/v1/nodes");
   if (!Array.isArray(stubs)) fail(502, "Invalid scheduler node inventory");
-  const result: Doc[] = [];
-  for (const stub of stubs) {
-    const node = await ctx.requestNomad(
-      "GET",
-      `/v1/node/${encodeURIComponent(stub.ID)}`,
-    );
-    if (ctx.store.get("machines", node.Meta?.pc_machine_id)) result.push(node);
-  }
-  return result;
+  // Fan out node details so a fleet check does not wait for one agent polling
+  // round-trip per node. All requests remain workspace-scoped by requestNomad.
+  if (stubs.length > 1000)
+    fail(502, "Scheduler node inventory exceeds the supported limit");
+  const result: Doc[] = new Array(stubs.length);
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(16, stubs.length) }, async () => {
+      while (cursor < stubs.length) {
+        const index = cursor++,
+          stub = stubs[index];
+        if (typeof stub.ID !== "string")
+          fail(502, "Invalid scheduler node identity");
+        result[index] = await ctx.requestNomad(
+          "GET",
+          `/v1/node/${encodeURIComponent(stub.ID)}`,
+        );
+      }
+    }),
+  );
+  return result.filter((node) =>
+    ctx.store.get("machines", node.Meta?.pc_machine_id),
+  );
 }
 export async function allocations(
   ctx: WorkspaceContext,

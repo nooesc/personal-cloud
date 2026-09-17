@@ -1,7 +1,15 @@
 import type { Env } from "./env";
 // Stored documents mirror the versioned agent/API JSON protocol.
 export type Doc = Record<string, any>;
+export type Selection = {
+  equal?: Record<string, string | number | null>;
+  before?: { field: string; value: string | number };
+  after?: { field: string; value: string | number };
+  limit?: number;
+  reverse?: boolean;
+};
 export interface Store {
+  select?<T = Doc>(collection: string, selection?: Selection): T[];
   get<T = Doc>(collection: string, id: string): T | undefined;
   list<T = Doc>(collection: string): T[];
   put(collection: string, id: string, value: unknown): void;
@@ -100,4 +108,26 @@ export async function boundedText(
     text += decoder.decode(value, { stream: true });
   }
   return text + decoder.decode();
+}
+
+export function selectDocuments(
+  store: Store,
+  collection: string,
+  selection: Selection = {},
+): Doc[] {
+  if (store.select) return store.select(collection, selection);
+  let rows = store
+    .list(collection)
+    .filter(
+      (row) =>
+        Object.entries(selection.equal ?? {}).every(
+          ([field, value]) => (row[field] ?? null) === value,
+        ) &&
+        (!selection.before ||
+          row[selection.before.field] < selection.before.value) &&
+        (!selection.after ||
+          row[selection.after.field] >= selection.after.value),
+    );
+  if (selection.reverse) rows.reverse();
+  return selection.limit === undefined ? rows : rows.slice(0, selection.limit);
 }

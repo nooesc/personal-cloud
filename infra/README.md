@@ -137,3 +137,9 @@ Docker prune or touches unrelated containers/volumes.
 - [Nomad agent configuration](https://developer.hashicorp.com/nomad/docs/configuration)
 - [Nomad configuration validation](https://developer.hashicorp.com/nomad/commands/config/validate)
 - [WireGuard quick start](https://www.wireguard.com/quickstart/)
+
+### Arch and Omarchy runtime setup
+
+Arch Linux and Omarchy 4 use the pacman runtime installer. Until a release contains this support, build the agent from the current checkout. Keep the existing machine identity when promoting an inventory agent; stop the user monitoring service only after the root provisioned service is installed. The agent must run with `--provision` to install and reconcile Nomad, WireGuard, and role metadata. An assigned database role alone does not make a host eligible.
+
+Set `PC_WIREGUARD_ENDPOINT` to a reachable private address and port on each fleet agent. Allow traffic from the fleet subnet on the `pc0` interface in the host firewall; do not expose database ports publicly. If the scheduler advertises a different private RPC listener for native Mac clients, configure Linux clients to reach that same listener using a separate Nomad configuration and systemd drop-in. Preserve those overrides across agent updates. Confirm an actual WireGuard handshake, a ready/eligible Nomad node, and an authenticated database query before calling setup complete.
