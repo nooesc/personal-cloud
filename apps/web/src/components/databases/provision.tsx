@@ -99,7 +99,7 @@ export function ProvisionDatabase({
           </Field>
         </div>
 
-        <fieldset className="flex flex-col gap-2">
+        <fieldset className="flex min-w-0 flex-col gap-2">
           <legend className="flex w-full items-baseline justify-between gap-3 pb-1.5 text-sm font-medium">
             Machine
             <Meta className="font-normal">placement is permanent</Meta>
@@ -242,7 +242,7 @@ function PlacementRow({
             <span className="truncate text-sm font-medium">{title}</span>
             {meta && <Meta className="hidden shrink-0 sm:inline">{meta}</Meta>}
           </span>
-          <span className="truncate text-xs text-muted-foreground">{detail}</span>
+          <span className="text-xs text-muted-foreground">{detail}</span>
         </span>
       </label>
     </li>

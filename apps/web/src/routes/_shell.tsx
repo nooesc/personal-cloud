@@ -311,7 +311,7 @@ function App() {
     };
   }, [userMenu]);
   const signedIn = hosted ? Boolean(session?.user) : Boolean(data.generated_at);
-  const fleet = useFleet({ enabled: signedIn });
+  const fleet = useFleet({ enabled: signedIn, scope: session?.workspace.id });
   const pendingEnrollments = (data.enrollments ?? []).filter((e) =>
     isWaiting(e),
   );
@@ -858,6 +858,10 @@ function App() {
             ) : null
           ) : null}
           <Outlet />
+          {fleet.error && (page === "Overview" || page === "Machines") && (
+            <p role="status" className="rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">{fleet.error}</p>
+          )}
+
           {!projectId && !databaseId && page === "Overview" && (
             <ShowHome
               data={data}

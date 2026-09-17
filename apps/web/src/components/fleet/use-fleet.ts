@@ -198,6 +198,7 @@ export interface FleetSummary extends Aggregate {
 }
 
 export interface Fleet {
+	error: string | null;
 	hosts: FleetHostView[];
 	samples: FleetSample[];
 	/** `live · last 42 min · every 5s`, or a collecting hint before two samples exist */
@@ -221,9 +222,12 @@ export interface Fleet {
  */
 export const useFleet = ({
 	enabled = true,
-}: { enabled?: boolean } = {}): Fleet => {
+	scope,
+}: { enabled?: boolean; scope?: string } = {}): Fleet => {
 	const [data, setData] = useState<FleetHistory>();
+	const [error, setError] = useState<string | null>(null);
 	useEffect(() => {
+		setError(null);
 		if (!enabled) {
 			setData(undefined);
 			return;
@@ -239,9 +243,11 @@ export const useFleet = ({
 				if (!Array.isArray(next.hosts)) throw new Error("Incompatible fleet history response");
 				pollMs = fleetPollDelay(next.pollMs);
 				setData({ ...next, pollMs });
+				setError(null);
 			} catch {
-				// Keep the previous payload; an auth or network failure never shows fake data.
+				// Retain historical charts, but never present stale readings as live.
 				if (cancelled) return;
+				setError("Fleet metrics could not refresh. Historical charts are retained; current machine readings are unavailable.");
 				pollMs = 60_000;
 			}
 			timer = window.setTimeout(poll, fleetPollDelay(pollMs));
@@ -251,12 +257,14 @@ export const useFleet = ({
 			cancelled = true;
 			clearTimeout(timer);
 		};
-	}, [enabled]);
+	}, [enabled, scope]);
 	const pollMs = data?.pollMs ?? POLL_MS;
 	const maxSamples = data?.maxSamples ?? MAX_SAMPLES;
 	const hosts = data?.hosts ?? NO_HOSTS;
 
-	const views = useMemo(() => buildViews(hosts), [hosts]);
+	const views = useMemo(() => buildViews(hosts).map((host): FleetHostView => error
+        ? { ...host, status: { state: "unreachable", error: "Current reading unavailable: fleet refresh failed" } }
+        : host), [hosts, error]);
 	const samples = useMemo(
 		() => buildSamples(hosts, pollMs, maxSamples),
 		[hosts, pollMs, maxSamples],
@@ -325,12 +333,13 @@ export const useFleet = ({
 
 	const first = samples[0];
 	const last = samples[samples.length - 1];
-	const windowLabel =
+	const windowLabel = error ? "stale · refresh failed" :
 		first && last && samples.length > 1
 			? `live · last ${formatWindow(last.t - first.t)} · every ${pollMs / 1000}s`
 			: "collecting samples…";
 
 	return {
+		error,
 		hosts: views,
 		samples,
 		windowLabel,

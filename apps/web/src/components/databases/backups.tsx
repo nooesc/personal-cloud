@@ -348,8 +348,8 @@ function RetentionField({
         }}
         className="h-8 w-16 text-center tabular-nums"
       />
-      <span className="text-muted-foreground">
-        successful {keep === 1 ? "copy" : "copies"}
+      <span className="whitespace-nowrap text-muted-foreground">
+        {keep === 1 ? "copy" : "copies"}
       </span>
     </label>
   );

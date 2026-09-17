@@ -14,9 +14,13 @@ This records a scoped live run on 2026-09-17. The fixture was a dedicated privat
 
 The first backup attempt exposed a real Nomad interpolation error: shell parameter expansion in a Docker argument was parsed as a Nomad expression. Checksum extraction now uses `cut`, and the subsequent scheduled backup and restore succeeded on the actual runtime. The workerd tests also guard against reintroducing shell parameter expansion in that command.
 
+- An intentionally unhealthy commit built successfully but failed the deployment health deadline. The controller rejected it and retained the previous deployment; the original endpoint still returned its version and database marker.
+
+- A second healthy source version deployed and returned the same marker. Rolling back to the first release reused its immutable image without clone/build steps; the resulting healthy endpoint returned the original application version and unchanged marker.
+
 ## Remaining acceptance steps
 
-Public HTTPS routing and the deliberate failed-deployment / immutable rollback sequence are in progress. Do not treat the full journey as complete until these results are recorded.
+The dedicated public HTTPS address awaits user confirmation before exposure. All application/database/backup/rollback steps above were observed live; do not treat the complete public journey as proven until HTTPS is checked externally.
 
 ## Reproduction outline
 

@@ -227,7 +227,7 @@ export const ShowHome = ({
 			? "no machines"
 			: `${data.machines.length} machine${data.machines.length === 1 ? "" : "s"}` +
 				(ready !== undefined ? ` · ${ready} ready` : "") +
-				(fleet.summary.online < fleet.summary.total
+				(fleet.error ? " · current readings unavailable" : fleet.summary.online < fleet.summary.total
 					? ` · ${fleet.summary.total - fleet.summary.online} unreachable`
 					: "");
 	const attention = statusBreakdown.error;
@@ -276,7 +276,7 @@ export const ShowHome = ({
 							</p>
 						</div>
 						<div className="flex flex-wrap items-center gap-2">
-							{live && (
+							{live && !fleet.error && (
 								<span className="mr-1 hidden items-center gap-1.5 font-mono text-[11px] text-muted-foreground sm:inline-flex">
 									<span
 										aria-hidden
@@ -322,12 +322,12 @@ export const ShowHome = ({
 							label="Machines"
 							value={
 								<>
-									{fleet.summary.online}
+									{fleet.error ? "—" : fleet.summary.online}
 									<span className="text-muted-foreground/60">/{fleet.summary.total}</span>
 								</>
 							}
 							sub={
-								fleet.summary.online < fleet.summary.total
+								fleet.error ? "Current readings unavailable" : fleet.summary.online < fleet.summary.total
 									? `${fleet.summary.total - fleet.summary.online} unreachable · ${fleet.summary.containers} containers`
 									: `all online · ${fleet.summary.containers} container${fleet.summary.containers === 1 ? "" : "s"}`
 							}
@@ -343,7 +343,7 @@ export const ShowHome = ({
 							value={
 								fleet.summary.cpuAvg === null ? "—" : `${Math.round(fleet.summary.cpuAvg)}%`
 							}
-							sub={`average across ${fleet.summary.online} online`}
+							sub={fleet.error ? "Current readings unavailable" : `average across ${fleet.summary.online} online`}
 							color="blue"
 							delay={DELAY.tiles + DELAY.tileStep * 1}
 						>
@@ -351,8 +351,8 @@ export const ShowHome = ({
 						</Tile>
 						<Tile
 							label="Memory"
-							value={`${fmtGiB(fleet.summary.memUsedGiB)} GiB`}
-							sub={`${fmtGiB(fleet.summary.memTotalGiB - fleet.summary.memUsedGiB)} GiB free across ${fleet.summary.online} online`}
+							value={fleet.error ? "—" : `${fmtGiB(fleet.summary.memUsedGiB)} GiB`}
+							sub={fleet.error ? "Current readings unavailable" : `${fmtGiB(fleet.summary.memTotalGiB - fleet.summary.memUsedGiB)} GiB free across ${fleet.summary.online} online`}
 							color="purple"
 							delay={DELAY.tiles + DELAY.tileStep * 2}
 						>
@@ -373,7 +373,7 @@ export const ShowHome = ({
 							sub={
 								fleet.summary.diskTotalGiB > 0
 									? `${fmtGiB(fleet.summary.diskTotalGiB - fleet.summary.diskUsedGiB)} GiB free on root volumes`
-									: "no disk reported yet"
+									: fleet.error ? "Current readings unavailable" : "no disk reported yet"
 							}
 							color="orange"
 							delay={DELAY.tiles + DELAY.tileStep * 3}

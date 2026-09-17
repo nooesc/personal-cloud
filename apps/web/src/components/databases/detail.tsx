@@ -290,7 +290,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   return (
     <>
       <dt className="text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 truncate">{children}</dd>
+      <dd className="min-w-0 break-words">{children}</dd>
     </>
   );
 }
