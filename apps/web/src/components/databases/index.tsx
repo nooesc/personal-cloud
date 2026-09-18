@@ -85,6 +85,8 @@ export function Databases({
   ).size;
   const canProvision = live && data.projects.length > 0;
 
+  if (!data.generated_at) return <div role="status" className="gh-surface rounded-lg p-5 text-sm text-muted-foreground">Loading your databases and connected backends…</div>;
+
   return (
     <div className="flex flex-col gap-4">
       {!projectId && (

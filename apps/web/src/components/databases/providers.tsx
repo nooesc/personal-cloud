@@ -159,7 +159,7 @@ export function DatabaseProviderPanel(props: Props) {
           <>
             <div className="flex items-center justify-between gap-3">
               <h3 className="text-sm font-medium">Linked resources</h3>
-              <Meta>{resources.length} connected · grouped by project</Meta>
+              <Meta>{resources.length} connected · project connections</Meta>
             </div>
             {resources.length ? (
               <ul className="divide-y divide-border rounded-lg border border-border">
@@ -940,6 +940,7 @@ function ResourceDetail({
                   {data.services.find((s) => s.id === b.service_id)?.name ??
                     "Removed service"}
                   <Meta className="block">{b.variable}</Meta>
+                  <a className="mt-1 inline-flex items-center gap-1 text-xs text-primary underline underline-offset-4" href={`/projects/${encodeURIComponent(r.project_id)}?service=${encodeURIComponent(b.service_id)}`}>Open service to deploy <ExternalLink className="size-3" /></a>
                 </span>
                 <Button
                   size="sm"

@@ -98,7 +98,7 @@ export function ProjectPage({
     const done = setTimeout(() => el.classList.remove("spotlight"), 1100);
     return () => clearTimeout(done);
   }, [spot]);
-  const databases = data.databases.filter((d) => d.project_id === project.id).length;
+  const databases = data.databases.filter((d) => d.project_id === project.id).length + (data.database_providers?.resources ?? []).filter((d) => d.project_id === project.id).length;
   const serviceIds = new Set(s.services.map((x) => x.id));
   const managed = data.domains.filter((d) => serviceIds.has(d.service_id));
   // Every address the project answers on, managed ones first (they carry a
