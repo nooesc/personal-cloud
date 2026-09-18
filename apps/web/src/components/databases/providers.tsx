@@ -842,7 +842,7 @@ function ResourceDetail({
                     placeholder="http://localhost:16791"
                   />
                 </Field>
-                <Button size="sm" disabled={!live || action.busy}>
+                <Button type="submit" size="sm" disabled={!live || action.busy}>
                   Save connection settings
                 </Button>
               </form>
@@ -919,7 +919,7 @@ function ResourceDetail({
                         placeholder="pc-convex-your-app"
                       />
                     </Field>
-                    <Button size="sm" disabled={!live || action.busy}>
+                    <Button type="submit" size="sm" disabled={!live || action.busy}>
                       Verify fleet runtime
                     </Button>
                   </form>
