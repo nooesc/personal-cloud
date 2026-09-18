@@ -1,3 +1,4 @@
+import { observeConvexRuntime } from "./convex-runtime";
 /** Account-wide discovery; only selected resource credentials cross into app bindings. */
 import {
   body,
@@ -157,6 +158,27 @@ function httpsOrigin(value: unknown, cloud = false): string {
     fail(502, "Provider returned an unexpected deployment URL");
   return u.origin;
 }
+function dashboardOrigin(value: unknown): string {
+  // Local dashboards are intentionally reachable only through the owner's tunnel.
+  const raw = text(value, 2048);
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return fail(400, "Enter a dashboard URL");
+  }
+  if (
+    url.protocol === "http:" &&
+    ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) &&
+    !url.username &&
+    !url.password &&
+    url.pathname === "/" &&
+    !url.search &&
+    !url.hash
+  )
+    return url.origin;
+  return httpsOrigin(raw);
+}
 async function resourceOptions(
   ctx: WorkspaceContext,
   a: Doc,
@@ -246,12 +268,15 @@ function bind(ctx: WorkspaceContext, link: Doc, input: Doc): void {
     link.provider !== "neon" &&
     ![
       "CONVEX_URL",
+      "CONVEX_SITE_URL",
       "NEXT_PUBLIC_CONVEX_URL",
       "VITE_CONVEX_URL",
       "PUBLIC_CONVEX_URL",
     ].includes(variable)
   )
     fail(400, "Choose a supported Convex URL variable");
+  if (variable === "CONVEX_SITE_URL" && !link.site_url)
+    fail(409, "Add the HTTP actions URL before attaching this worker");
   if (link.provider === "neon" && ctx.store.get("bindings", service.id))
     fail(409, "Detach the fleet database before attaching Neon");
   const family = link.provider === "neon" ? "postgres" : "convex";
@@ -281,7 +306,8 @@ export async function providerEnvironment(
       );
     else {
       env.CONVEX_URL = link.url;
-      env[b.variable] = link.url;
+      env[b.variable] =
+        b.variable === "CONVEX_SITE_URL" ? link.site_url : link.url;
     }
   }
   return env;
@@ -392,6 +418,10 @@ export async function handleDatabaseProviders(
     if (input.provider === "convex_self_hosted") {
       link.provider = input.provider;
       link.url = httpsOrigin(input.url);
+      link.site_url = input.site_url ? httpsOrigin(input.site_url) : null;
+      link.dashboard_url = input.dashboard_url
+        ? dashboardOrigin(input.dashboard_url)
+        : null;
       const admin = text(input.admin_key, 8192);
       // This authenticated read validates access. Never persist or return environment values.
       await request(
@@ -468,17 +498,99 @@ export async function handleDatabaseProviders(
       get(ctx, accounts, a.id);
     }
     projectReady(ctx, link.project_id);
+    if (
+      ctx.store
+        .list(links)
+        .some(
+          (r) =>
+            r.project_id === link.project_id &&
+            r.provider === link.provider &&
+            r.url &&
+            r.url === link.url,
+        )
+    )
+      fail(409, "This backend is already linked to this project");
     link.checked_at = now();
     ctx.store.put(links, link.id, link);
     ctx.broadcast();
     return json(publicLink(link), 201);
   }
   m =
-    /^\/api\/database-providers\/resources\/([^/]+)(?:\/(attach|detach|connection))?$/.exec(
+    /^\/api\/database-providers\/resources\/([^/]+)(?:\/(attach|detach|connection|check|runtime))?$/.exec(
       path,
     );
   if (m) {
     const link = get(ctx, links, m[1]!);
+    if (m[2] === "runtime" && method === "POST") {
+      if (link.provider !== "convex_self_hosted")
+        fail(400, "Only self-hosted Convex has a fleet runtime");
+      const input = await body(req);
+      const runtime = await observeConvexRuntime(ctx, input.job_id);
+      const current = get(ctx, links, link.id);
+      projectReady(ctx, current.project_id);
+      if (current.runtime && current.runtime.job_id !== runtime.job_id)
+        fail(
+          409,
+          "This database is pinned to its existing runtime; relocation requires a separate migration",
+        );
+      ctx.store.put(links, link.id, { ...current, runtime });
+      ctx.broadcast();
+      return json(runtime);
+    }
+    if (link.provider === "convex_self_hosted" && !m[2] && method === "PATCH") {
+      const input = await body(req);
+      const current = get(ctx, links, link.id);
+      projectReady(ctx, current.project_id);
+      const next = { ...current };
+      if (input.site_url !== undefined) {
+        next.site_url = input.site_url ? httpsOrigin(input.site_url) : null;
+        if (
+          next.site_url !== current.site_url &&
+          ctx.store
+            .list(bindings)
+            .some(
+              (b) =>
+                b.resource_id === link.id && b.variable === "CONVEX_SITE_URL",
+            )
+        )
+          fail(409, "Detach HTTP actions readers before changing their URL");
+      }
+      if (input.dashboard_url !== undefined)
+        next.dashboard_url = input.dashboard_url
+          ? dashboardOrigin(input.dashboard_url)
+          : null;
+      ctx.store.put(links, link.id, next);
+      ctx.broadcast();
+      return json(publicLink(next));
+    }
+    if (m[2] === "check" && method === "POST") {
+      if (link.provider !== "convex_self_hosted")
+        fail(400, "Connection checks are available for self-hosted Convex");
+      let error: string | null = null;
+      try {
+        const key = await ctx.open(
+          `database-link-admin:${link.id}`,
+          link.admin_encrypted,
+        );
+        await request(
+          link.url + "/api/v1/list_environment_variables",
+          key,
+          "Convex",
+        );
+      } catch {
+        error =
+          "Could not verify backend access. Check its availability and admin key.";
+      }
+      const current = get(ctx, links, link.id);
+      ctx.store.put(links, link.id, {
+        ...current,
+        last_check_at: now(),
+        check_error: error,
+        ...(error ? {} : { checked_at: now() }),
+      });
+      ctx.broadcast();
+      return json({ verified: !error, error });
+    }
     if (m[2] === "connection" && method === "GET")
       return json(
         link.provider === "neon"

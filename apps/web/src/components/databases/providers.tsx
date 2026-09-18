@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Cloud, Link2, Plus, Server } from "lucide-react";
+import {
+  Cloud,
+  Link2,
+  Plus,
+  Server,
+  ExternalLink,
+  RefreshCw,
+  Copy,
+  CheckCircle2,
+} from "lucide-react";
 import {
   api,
   type Snapshot,
@@ -44,10 +53,13 @@ export function DatabaseProviderPanel(props: Props) {
       <header className="flex flex-wrap items-start justify-between gap-3 border-b border-border p-4">
         <div>
           <span className="gh-eyebrow">Connected backends</span>
-          <h2 className="mt-1 font-semibold">Your accounts. Your projects.</h2>
+          <h2 className="mt-1 font-semibold">
+            Backends connected to your apps.
+          </h2>
           <p className="mt-1 max-w-xl text-sm text-muted-foreground">
             Connect a Neon organization or Convex team once, then choose the
-            resources your apps use.
+            resources your apps use. Or connect a backend running on your own
+            hardware.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -147,9 +159,7 @@ export function DatabaseProviderPanel(props: Props) {
           <>
             <div className="flex items-center justify-between gap-3">
               <h3 className="text-sm font-medium">Linked resources</h3>
-              <Meta>
-                {resources.length} linked · data stays with its provider
-              </Meta>
+              <Meta>{resources.length} connected · grouped by project</Meta>
             </div>
             {resources.length ? (
               <ul className="divide-y divide-border rounded-lg border border-border">
@@ -162,6 +172,13 @@ export function DatabaseProviderPanel(props: Props) {
                     >
                       <div className="min-w-0">
                         <span className="font-medium">{r.name}</span>
+                        <p
+                          className={`mt-1 text-xs ${r.check_error ? "text-destructive" : "text-muted-foreground"}`}
+                        >
+                          {r.check_error
+                            ? "Connection needs attention"
+                            : `Access verified ${ago(r.checked_at)}`}
+                        </p>
                         <p className="break-all text-xs text-muted-foreground">
                           {label(r.provider)} ·{" "}
                           {r.database_name ?? r.deployment ?? r.url}
@@ -293,7 +310,9 @@ function ConnectAccount({ refresh, onClose }: Props & { onClose: () => void }) {
           <Button variant="outline" type="button" onClick={onClose}>
             Cancel
           </Button>
-          <Button type="submit" disabled={action.busy}>Connect account</Button>
+          <Button type="submit" disabled={action.busy}>
+            Connect account
+          </Button>
         </DialogFooter>
       </form>
     </Dialog>
@@ -331,7 +350,9 @@ function RotateKey({
         </Field>
         <Feedback action={action} />
         <DialogFooter>
-          <Button type="submit" disabled={action.busy}>Verify and replace</Button>
+          <Button type="submit" disabled={action.busy}>
+            Verify and replace
+          </Button>
         </DialogFooter>
       </form>
     </Dialog>
@@ -615,7 +636,9 @@ function LinkResource(props: Props & { onClose: () => void }) {
           <Button variant="outline" type="button" onClick={onClose}>
             Cancel
           </Button>
-          <Button type="submit" disabled={!ready || action.busy}>Link resource</Button>
+          <Button type="submit" disabled={!ready || action.busy}>
+            Link resource
+          </Button>
         </DialogFooter>
       </form>
     </Dialog>
@@ -626,7 +649,7 @@ function SelfHosted(props: Props & { onClose: () => void }) {
   return (
     <Dialog
       title="Connect self-hosted Convex"
-      description="Connect a running Convex backend through its public HTTPS address. Dinghy will not install or move the backend."
+      description="Bring an existing backend into your project. Verify access, connect readers, and keep its dashboard and connection details together."
       onClose={props.onClose}
     >
       <form
@@ -658,6 +681,26 @@ function SelfHosted(props: Props & { onClose: () => void }) {
           />
         </Field>
         <Field
+          label="HTTP actions URL (optional)"
+          hint="For workers and webhooks. This is different from the backend API URL."
+        >
+          <Input
+            name="site_url"
+            type="url"
+            placeholder="https://convex-site.example.com"
+          />
+        </Field>
+        <Field
+          label="Dashboard URL (optional)"
+          hint="A public HTTPS dashboard or a localhost address reached through your SSH tunnel."
+        >
+          <Input
+            name="dashboard_url"
+            type="url"
+            placeholder="http://localhost:16791"
+          />
+        </Field>
+        <Field
           label="Admin key"
           hint="Stored encrypted for explicit CLI connection reveal. Never injected into an app or browser bundle."
         >
@@ -665,7 +708,9 @@ function SelfHosted(props: Props & { onClose: () => void }) {
         </Field>
         <Feedback action={action} />
         <DialogFooter>
-          <Button type="submit" disabled={action.busy}>Verify and connect</Button>
+          <Button type="submit" disabled={action.busy}>
+            Verify and connect
+          </Button>
         </DialogFooter>
       </form>
     </Dialog>
@@ -690,13 +735,199 @@ function ResourceDetail({
   return (
     <Dialog
       title={r.name}
-      description={`${label(r.provider)} · linked ${ago(r.checked_at)}. Provider access was checked; application query health is not monitored here.`}
+      description={`${label(r.provider)} · ${data.projects.find((p) => p.id === r.project_id)?.name ?? "Project"}`}
       onClose={onClose}
     >
       <div className="flex flex-col gap-4">
-        <p className="break-all text-sm text-muted-foreground">
-          {r.url ?? `${r.database_name} · ${r.branch_id} · ${r.address}`}
-        </p>
+        <div className="rounded-lg border border-border bg-muted/20 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <span
+                className={`flex items-center gap-2 text-sm font-medium ${r.check_error ? "text-destructive" : "text-primary"}`}
+              >
+                <CheckCircle2 className="size-4" />
+                {r.check_error
+                  ? "Connection needs attention"
+                  : "Access verified"}
+              </span>
+              <Meta className="mt-1 block">
+                {r.check_error ?? `Last successful check ${ago(r.checked_at)}`}
+              </Meta>
+            </div>
+            {r.provider === "convex_self_hosted" && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!live || action.busy}
+                onClick={() =>
+                  void action.run(async () => {
+                    const result = await api<{
+                      verified: boolean;
+                      error?: string;
+                    }>(`${base}/resources/${r.id}/check`, {});
+                    await refresh();
+                    if (!result.verified) throw new Error(result.error);
+                  }, "Backend access verified")
+                }
+              >
+                <RefreshCw />
+                Check connection
+              </Button>
+            )}
+          </div>
+          <p className="mt-3 break-all font-mono text-xs text-muted-foreground">
+            {r.url ?? `${r.database_name} · ${r.branch_id} · ${r.address}`}
+          </p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            This checks backend access, not application query health.
+          </p>
+        </div>
+        {r.provider === "convex_self_hosted" && (
+          <>
+            <div className="flex flex-wrap items-center gap-2">
+              {r.dashboard_url && (
+                <a
+                  href={r.dashboard_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm font-medium hover:bg-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+                >
+                  <ExternalLink className="size-4" />
+                  Open dashboard
+                </a>
+              )}
+              <Meta>
+                The dashboard uses the admin key under Reveal connection.
+              </Meta>
+            </div>
+            {r.dashboard_url?.startsWith("http:") && (
+              <p className="text-xs text-muted-foreground">
+                Your local dashboard requires its SSH tunnel to be running on
+                this computer.
+              </p>
+            )}
+            <details className="rounded-lg border border-border p-3">
+              <summary className="cursor-pointer text-sm font-medium">
+                Connection settings
+              </summary>
+              <form
+                className="mt-4 flex flex-col gap-3"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const values = Object.fromEntries(
+                    new FormData(e.currentTarget),
+                  );
+                  void action.run(async () => {
+                    await api(`${base}/resources/${r.id}`, values, "PATCH");
+                    await refresh();
+                  }, "Connection settings saved");
+                }}
+              >
+                <Field
+                  label="HTTP actions URL"
+                  hint="Workers use this URL through CONVEX_SITE_URL."
+                >
+                  <Input
+                    name="site_url"
+                    type="url"
+                    defaultValue={r.site_url ?? ""}
+                    placeholder="https://convex-site.example.com"
+                  />
+                </Field>
+                <Field label="Dashboard URL">
+                  <Input
+                    name="dashboard_url"
+                    type="url"
+                    defaultValue={r.dashboard_url ?? ""}
+                    placeholder="http://localhost:16791"
+                  />
+                </Field>
+                <Button size="sm" disabled={!live || action.busy}>
+                  Save connection settings
+                </Button>
+              </form>
+            </details>
+          </>
+        )}
+        {r.provider === "convex_self_hosted" && (
+          <section className="rounded-lg border border-border p-4">
+            <span className="gh-eyebrow">Fleet runtime</span>
+            {r.runtime ? (
+              <>
+                <h3 className="mt-1 font-medium">
+                  {data.machines.find((m) => m.id === r.runtime!.machine_id)
+                    ?.report.hostname ?? "Original machine"}{" "}
+                  <span className="text-sm text-muted-foreground">
+                    · {r.runtime.status}
+                  </span>
+                </h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Pinned storage · checked {ago(r.runtime.checked_at)}. Runtime
+                  status is a recorded observation.
+                </p>
+                <p className="mt-3 break-all font-mono text-xs">
+                  {r.runtime.data_path}
+                </p>
+                <Button
+                  className="mt-3"
+                  size="sm"
+                  variant="outline"
+                  disabled={!live || action.busy}
+                  onClick={() =>
+                    void action.run(async () => {
+                      await api(`${base}/resources/${r.id}/runtime`, {
+                        job_id: r.runtime!.job_id,
+                      });
+                      await refresh();
+                    }, "Fleet runtime verified")
+                  }
+                >
+                  <RefreshCw />
+                  Refresh runtime
+                </Button>
+              </>
+            ) : (
+              <>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Already running on your fleet? Associate its existing runtime
+                  so its machine and persistent storage are visible here.
+                </p>
+                <details className="mt-3">
+                  <summary className="cursor-pointer text-sm font-medium">
+                    Connect existing fleet runtime
+                  </summary>
+                  <form
+                    className="mt-3 flex flex-col gap-3"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      const values = Object.fromEntries(
+                        new FormData(e.currentTarget),
+                      );
+                      void action.run(async () => {
+                        await api(`${base}/resources/${r.id}/runtime`, values);
+                        await refresh();
+                      }, "Fleet runtime connected");
+                    }}
+                  >
+                    <Field
+                      label="Existing Nomad job ID"
+                      hint="Dinghy verifies the original machine, disabled relocation, and persistent storage. The running job is not modified."
+                    >
+                      <Input
+                        name="job_id"
+                        required
+                        placeholder="pc-convex-your-app"
+                      />
+                    </Field>
+                    <Button size="sm" disabled={!live || action.busy}>
+                      Verify fleet runtime
+                    </Button>
+                  </form>
+                </details>
+              </>
+            )}
+          </section>
+        )}
         <h3 className="text-sm font-medium">Attached services</h3>
         {readers.length ? (
           <ul className="divide-y divide-border rounded-lg border border-border">
@@ -756,6 +987,7 @@ function ResourceDetail({
               <Field label="URL variable">
                 <Select name="variable">
                   <option>CONVEX_URL</option>
+                  {r.site_url && <option>CONVEX_SITE_URL</option>}
                   <option>NEXT_PUBLIC_CONVEX_URL</option>
                   <option>VITE_CONVEX_URL</option>
                   <option>PUBLIC_CONVEX_URL</option>
@@ -805,11 +1037,43 @@ function ResourceDetail({
           </Button>
         </div>
         {connection && (
-          <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-muted p-3 text-xs">
-            {Object.entries(connection)
-              .map(([k, v]) => `${k}=${v}`)
-              .join("\n")}
-          </pre>
+          <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
+            {Object.entries(connection).map(([key, value]) => (
+              <div key={key} className="min-w-0">
+                <label
+                  className="mb-1 block break-all font-mono text-xs"
+                  htmlFor={`connection-${key}`}
+                >
+                  {key}
+                </label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    id={`connection-${key}`}
+                    readOnly
+                    value={value}
+                    type={
+                      key.includes("KEY") || key === "DATABASE_URL"
+                        ? "password"
+                        : "text"
+                    }
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    aria-label={`Copy ${key}`}
+                    onClick={() =>
+                      void action.run(
+                        () => navigator.clipboard.writeText(value),
+                        "Copied to clipboard",
+                      )
+                    }
+                  >
+                    <Copy />
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
         )}
         <p className="text-xs text-muted-foreground">
           Unlinking preserves the remote backend and its data. Backups and

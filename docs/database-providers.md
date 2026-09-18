@@ -33,3 +33,11 @@ Tests exercise real local workerd/SQLite storage and production API handlers wit
 No live Neon/Convex account or self-hosted backend has been connected as part of this implementation. Provider credentials must be entered through the application before claiming live access or application connectivity.
 
 API references: [Neon organization API](https://neon.com/docs/manage/orgs-api), [Convex Management API](https://docs.convex.dev/management-api/overview), [Convex self-hosting](https://docs.convex.dev/self-hosting).
+
+## Self-hosted Convex operating flow
+
+After connecting an existing backend, its detail view includes a fresh authenticated access check, an optional dashboard shortcut, and individually copyable connection values. Localhost dashboard shortcuts require the owner's existing tunnel; Dinghy never places an admin key in a URL. The database overview counts connected backends as well as provisioned PostgreSQL instances, without treating connection access as application query health.
+
+Save an explicit **HTTP actions URL** for workers that use `CONVEX_SITE_URL`. Attaching this variable supplies the actions origin and the normal `CONVEX_URL` separately on the next deployment. Readers must be detached before changing their actions origin. Frontend build-time injection remains outside this runtime attachment flow.
+
+For a backend already running on the fleet, **Connect existing fleet runtime** verifies its Nomad job, original workspace machine, single instance, disabled relocation, and absolute persistent data mount. The recorded runtime can be refreshed from the detail view. Association does not modify the running job or import backup ownership. Native Convex provisioning, upgrades, backup orchestration and migrations are still not implemented; a linked or running badge does not claim those capabilities.

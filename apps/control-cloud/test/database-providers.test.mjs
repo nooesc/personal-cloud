@@ -111,3 +111,82 @@ test("attach re-reads link after body IO and rejects deleting services/projects"
     assert.equal(ctx.store.list("provider_bindings").length, 0);
   }
 });
+test("self-hosted actions URL is explicit and never substituted with the query URL", async () => {
+  const ctx = context();
+  seed(ctx);
+  ctx.store.put("database_links", "c", {
+    id: "c",
+    project_id: "p",
+    provider: "convex_self_hosted",
+    url: "https://api.example.com",
+    admin_encrypted: "sealed:private",
+  });
+  const attach = () =>
+    handleDatabaseProviders(
+      new Request(
+        "https://local.test/api/database-providers/resources/c/attach",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            service_id: "s",
+            variable: "CONVEX_SITE_URL",
+          }),
+        },
+      ),
+      ctx,
+    );
+  await assert.rejects(attach(), /HTTP actions URL/);
+  ctx.store.put("database_links", "c", {
+    ...ctx.store.get("database_links", "c"),
+    site_url: "https://actions.example.com",
+  });
+  await attach();
+  assert.deepEqual(await providerEnvironment(ctx, "s"), {
+    CONVEX_URL: "https://api.example.com",
+    CONVEX_SITE_URL: "https://actions.example.com",
+  });
+  await assert.rejects(
+    handleDatabaseProviders(
+      new Request("https://local.test/api/database-providers/resources/c", {
+        method: "PATCH",
+        body: JSON.stringify({ site_url: "https://different.example.com" }),
+      }),
+      ctx,
+    ),
+    /Detach HTTP actions/,
+  );
+});
+
+test("dashboard settings accept local tunnels but reject credential-bearing and unsafe URLs", async () => {
+  const ctx = context();
+  seed(ctx);
+  ctx.store.put("database_links", "c", {
+    id: "c",
+    project_id: "p",
+    provider: "convex_self_hosted",
+  });
+  for (const url of [
+    "javascript:alert(1)",
+    "https://user:secret@example.com",
+    "http://192.168.1.1",
+    "http://localhost:1234/?key=secret",
+  ]) {
+    await assert.rejects(
+      handleDatabaseProviders(
+        new Request("https://local.test/api/database-providers/resources/c", {
+          method: "PATCH",
+          body: JSON.stringify({ dashboard_url: url }),
+        }),
+        ctx,
+      ),
+    );
+  }
+  const r = await handleDatabaseProviders(
+    new Request("https://local.test/api/database-providers/resources/c", {
+      method: "PATCH",
+      body: JSON.stringify({ dashboard_url: "http://localhost:16791/" }),
+    }),
+    ctx,
+  );
+  assert.equal((await r.json()).dashboard_url, "http://localhost:16791");
+});

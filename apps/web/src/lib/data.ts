@@ -224,7 +224,7 @@ export type CloudflareOverview = {
   organization?: Organization;
 };
 export type DatabaseAccount = { id: string; provider: "neon" | "convex"; name: string; scope_id: string; checked_at: string };
-export type ProviderResource = { id: string; provider: "neon" | "convex" | "convex_self_hosted"; name: string; project_id: string; account_id?: string; provider_project_id?: string; branch_id?: string; database_name?: string; role_name?: string; url?: string; address?: string; deployment?: string; environment?: string; checked_at: string };
+export type ProviderResource = { runtime?: {job_id: string; machine_id: string; node_id: string; image: string; data_path: string; status: string; allocation_id: string | null; checked_at: string}; site_url?: string | null; dashboard_url?: string | null; check_error?: string | null; last_check_at?: string; id: string; provider: "neon" | "convex" | "convex_self_hosted"; name: string; project_id: string; account_id?: string; provider_project_id?: string; branch_id?: string; database_name?: string; role_name?: string; url?: string; address?: string; deployment?: string; environment?: string; checked_at: string };
 export type DatabaseProviders = { accounts: DatabaseAccount[]; resources: ProviderResource[]; bindings: { id: string; service_id: string; resource_id: string; variable: string }[] };
 export type Snapshot = {
   database_providers?: DatabaseProviders;

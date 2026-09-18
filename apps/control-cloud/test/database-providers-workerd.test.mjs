@@ -367,7 +367,19 @@ test("workspace provider accounts discover, link, bind and unlink without leakin
       403,
     );
     assert.ok(!JSON.stringify(error).includes("provider-secret"));
+    const badCheck = await call(`/database-providers/resources/${self.id}/check`, {});
+    assert.equal(badCheck.verified, false);
+    let checked = (await call("/snapshot")).database_providers.resources.find((r) => r.id === self.id);
+    assert.ok(checked.check_error);
+    assert.ok(!JSON.stringify(checked).includes("provider-secret"));
     reject = false;
+    assert.equal((await call(`/database-providers/resources/${self.id}/check`, {})).verified, true);
+    checked = (await call("/snapshot")).database_providers.resources.find((r) => r.id === self.id);
+    assert.equal(checked.check_error, null);
+    await call(`/database-providers/resources/${self.id}`, {site_url:"https://actions.example.com", dashboard_url:"http://localhost:16791"}, "PATCH");
+    checked = (await call("/snapshot")).database_providers.resources.find((r) => r.id === self.id);
+    assert.equal(checked.site_url,"https://actions.example.com");
+    assert.equal(checked.dashboard_url,"http://localhost:16791");
     await call(
       `/database-providers/accounts/${a.id}/credential`,
       { api_key: "neon-rotated-key" },
