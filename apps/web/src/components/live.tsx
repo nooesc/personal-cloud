@@ -284,7 +284,7 @@ export function Setup({
     );
   return (
     <div className="grid gap-6 lg:grid-cols-2">
-      <DatabaseProviderPanel data={data} live={live} refresh={refresh} settings />
+      <DatabaseProviderPanel data={data} live={live} refresh={refresh} />
       <Card className="lg:col-span-2">
         <CardHeader>
           <Eyebrow>Your first deployment</Eyebrow>

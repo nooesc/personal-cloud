@@ -1,9 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
-  Cloud,
-  Link2,
   Plus,
-  Server,
   ExternalLink,
   RefreshCw,
   Copy,
@@ -15,127 +12,134 @@ import {
   type DatabaseAccount,
   type ProviderResource,
 } from "../../lib/data";
+import { cn } from "../../lib/utils";
 import { Field, Feedback, useAction } from "../live";
 import { Button } from "../ui/button";
 import { Dialog, DialogFooter } from "../ui/dialog";
 import { Input, Select } from "../ui/input";
-import { Meta } from "../ui/misc";
+import { Eyebrow, Meta } from "../ui/misc";
 import { ago } from "../project-summary";
+import { ENGINES, EngineMark } from "./engine";
 const base = "/database-providers";
-const label = (p: string) =>
-  p === "neon"
-    ? "Neon"
-    : p === "convex"
-      ? "Convex Cloud"
-      : "Convex · self-hosted";
 type Props = {
   data: Snapshot;
   refresh: () => Promise<unknown>;
   live: boolean;
   projectId?: string;
-  settings?: boolean;
 };
-export function DatabaseProviderPanel(props: Props) {
-  const { data, live, refresh, projectId, settings } = props;
-  const [dialog, setDialog] = useState<"account" | "link" | "self" | null>(
-    null,
-  );
-  const [resource, setResource] = useState<string>();
-  const [rotate, setRotate] = useState<DatabaseAccount>();
+
+/** Every provider dialog the Databases page and Settings can open. */
+export type ProviderDialog =
+  | { kind: "account" }
+  | { kind: "link" }
+  | { kind: "self" }
+  | { kind: "rotate"; account: DatabaseAccount }
+  | { kind: "resource"; id: string };
+
+/** Renders whichever provider dialog is open; the caller owns the choice. */
+export function ProviderDialogs({
+  dialog,
+  onClose,
+  ...props
+}: Props & { dialog: ProviderDialog | null; onClose: () => void }) {
+  const state = props.data.database_providers;
+  if (!dialog || !state) return null;
+  switch (dialog.kind) {
+    case "account":
+      return <ConnectAccount {...props} onClose={onClose} />;
+    case "link":
+      return <LinkResource {...props} onClose={onClose} />;
+    case "self":
+      return <SelfHosted {...props} onClose={onClose} />;
+    case "rotate":
+      return (
+        <RotateKey {...props} account={dialog.account} onClose={onClose} />
+      );
+    case "resource": {
+      const resource = state.resources.find((r) => r.id === dialog.id);
+      return resource ? (
+        <ResourceDetail
+          key={resource.id}
+          {...props}
+          resource={resource}
+          onClose={onClose}
+        />
+      ) : null;
+    }
+  }
+}
+
+/**
+ * Connected provider accounts, one dense row each. Accounts are workspace
+ * credentials, not project resources, so the strip sits with the page header
+ * rather than inside the ledger.
+ */
+export function ProviderAccounts({
+  data,
+  live,
+  refresh,
+  onConnect,
+  onRotate,
+  className,
+}: Props & {
+  onConnect: () => void;
+  onRotate: (account: DatabaseAccount) => void;
+  className?: string;
+}) {
   const state = data.database_providers;
   const action = useAction();
   if (!state) return null;
-  const resources = state.resources.filter(
-    (r) => !projectId || r.project_id === projectId,
-  );
   return (
-    <section className="gh-surface min-w-0 rounded-lg lg:col-span-2">
-      <header className="flex flex-wrap items-start justify-between gap-3 border-b border-border p-4">
-        <div>
-          <span className="gh-eyebrow">Connected backends</span>
-          <h2 className="mt-1 font-semibold">
-            Backends connected to your apps.
-          </h2>
-          <p className="mt-1 max-w-xl text-sm text-muted-foreground">
-            Connect a Neon organization or Convex team once, then choose the
-            resources your apps use. Or connect a backend running on your own
-            hardware.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={!live}
-            onClick={() => setDialog("account")}
-          >
-            <Plus />
-            Connect account
-          </Button>
-          {!settings && (
-            <>
-              <Button
-                size="sm"
-                disabled={
-                  !live || !state.accounts.length || !data.projects.length
-                }
-                onClick={() => setDialog("link")}
-              >
-                <Link2 />
-                Link resource
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={!live || !data.projects.length}
-                onClick={() => setDialog("self")}
-              >
-                <Server />
-                Self-hosted Convex
-              </Button>
-            </>
-          )}
-        </div>
-      </header>
-      <div className="flex flex-col gap-4 p-4">
-        <Feedback action={action} />
-        {!state.accounts.length ? (
-          <p className="text-sm text-muted-foreground">
-            No provider accounts connected. Your existing fleet databases stay
-            independent.
-          </p>
-        ) : (
-          <ul className="grid gap-3 sm:grid-cols-2">
-            {state.accounts.map((a) => (
+    <div className={cn("flex min-w-0 flex-col", className)}>
+      <div className="flex items-center justify-between gap-3 px-4 pt-2.5 pb-1 sm:px-5">
+        <Eyebrow>Provider accounts</Eyebrow>
+        <Button size="xs" variant="ghost" disabled={!live} onClick={onConnect}>
+          <Plus />
+          Connect account
+        </Button>
+      </div>
+      {state.accounts.length ? (
+        <ul className="flex flex-col divide-y divide-border/60">
+          {state.accounts.map((a) => {
+            const linked = state.resources.filter(
+              (r) => r.account_id === a.id,
+            ).length;
+            return (
               <li
                 key={a.id}
-                className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-lg border border-border p-3"
+                className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-1 px-4 py-2.5 sm:grid-cols-[auto_minmax(0,1fr)_auto_auto] sm:px-5"
               >
-                <div className="min-w-0">
-                  <span className="flex items-center gap-2 font-medium">
-                    <Cloud className="size-4 text-primary" />
+                <EngineMark engine={a.provider} size={24} />
+                <span className="flex min-w-0 flex-col">
+                  <span className="truncate text-sm font-medium" title={a.name}>
                     {a.name}
                   </span>
-                  <p className="mt-1 break-all text-xs text-muted-foreground">
-                    {label(a.provider)} · {a.scope_id}
-                  </p>
-                  <Meta>Access checked {ago(a.checked_at)}</Meta>
-                </div>
-                <div className="flex gap-1">
+                  <Meta className="truncate">
+                    {ENGINES[a.provider].label} · {a.scope_id} · checked{" "}
+                    {ago(a.checked_at)}
+                  </Meta>
+                </span>
+                <Meta className="col-start-2 sm:col-start-auto sm:text-right">
+                  {linked} linked
+                </Meta>
+                <span className="col-start-2 flex gap-0.5 sm:col-start-auto">
                   <Button
-                    size="sm"
+                    size="xs"
                     variant="ghost"
-                    disabled={!live}
-                    onClick={() => setRotate(a)}
+                    disabled={!live || action.busy}
+                    onClick={() => onRotate(a)}
                   >
                     Replace key
                   </Button>
                   <Button
-                    size="sm"
+                    size="xs"
                     variant="ghost"
-                    disabled={
-                      !live ||
-                      state.resources.some((r) => r.account_id === a.id)
+                    className="text-muted-foreground"
+                    disabled={!live || action.busy || linked > 0}
+                    title={
+                      linked > 0
+                        ? "Unlink its resources before disconnecting"
+                        : undefined
                     }
                     onClick={() =>
                       void action.run(async () => {
@@ -150,91 +154,57 @@ export function DatabaseProviderPanel(props: Props) {
                   >
                     Disconnect
                   </Button>
-                </div>
+                </span>
               </li>
-            ))}
-          </ul>
-        )}
-        {!settings && (
-          <>
-            <div className="flex items-center justify-between gap-3">
-              <h3 className="text-sm font-medium">Linked resources</h3>
-              <Meta>{resources.length} connected · project connections</Meta>
-            </div>
-            {resources.length ? (
-              <ul className="divide-y divide-border rounded-lg border border-border">
-                {resources.map((r) => (
-                  <li key={r.id}>
-                    <button
-                      type="button"
-                      className="gh-interactive flex w-full flex-wrap items-center justify-between gap-2 p-3 text-left"
-                      onClick={() => setResource(r.id)}
-                    >
-                      <div className="min-w-0">
-                        <span className="font-medium">{r.name}</span>
-                        <p
-                          className={`mt-1 text-xs ${r.check_error ? "text-destructive" : "text-muted-foreground"}`}
-                        >
-                          {r.check_error
-                            ? "Connection needs attention"
-                            : `Access verified ${ago(r.checked_at)}`}
-                        </p>
-                        <p className="break-all text-xs text-muted-foreground">
-                          {label(r.provider)} ·{" "}
-                          {r.database_name ?? r.deployment ?? r.url}
-                        </p>
-                      </div>
-                      <Meta>
-                        {data.projects.find((p) => p.id === r.project_id)?.name}{" "}
-                        ·{" "}
-                        {
-                          state.bindings.filter((b) => b.resource_id === r.id)
-                            .length
-                        }{" "}
-                        attached
-                      </Meta>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                Link an existing database or deployment to a Dinghy project.
-                Linking does not move or copy data.
-              </p>
-            )}
-          </>
-        )}
-      </div>
-      {dialog === "account" && (
-        <ConnectAccount {...props} onClose={() => setDialog(null)} />
+            );
+          })}
+        </ul>
+      ) : (
+        <p className="px-4 pb-3 text-sm text-muted-foreground sm:px-5">
+          No provider accounts yet. Connect a Neon organization or Convex team
+          once, then link the resources your apps use.
+        </p>
       )}
-      {dialog === "link" && (
-        <LinkResource {...props} onClose={() => setDialog(null)} />
+      {(action.error || action.message) && (
+        <div className="px-4 pb-3 sm:px-5">
+          <Feedback action={action} />
+        </div>
       )}
-      {dialog === "self" && (
-        <SelfHosted {...props} onClose={() => setDialog(null)} />
-      )}
-      {rotate && (
-        <RotateKey
-          {...props}
-          account={rotate}
-          onClose={() => setRotate(undefined)}
-        />
-      )}
-      {resource && state.resources.find((r) => r.id === resource) && (
-        <ResourceDetail
-          key={resource}
-          {...props}
-          resource={state.resources.find((r) => r.id === resource)!}
-          onClose={() => setResource(undefined)}
-        />
-      )}
+    </div>
+  );
+}
+
+/** Settings: the accounts alone, with their credential actions. */
+export function DatabaseProviderPanel(props: Props) {
+  const [dialog, setDialog] = useState<ProviderDialog | null>(null);
+  if (!props.data.database_providers) return null;
+  return (
+    <section className="gh-surface min-w-0 rounded-lg lg:col-span-2">
+      <header className="border-b border-border px-4 py-4 sm:px-5">
+        <Eyebrow>Database providers</Eyebrow>
+        <h2 className="mt-1 font-semibold">Neon and Convex accounts</h2>
+        <p className="mt-1 max-w-xl text-sm text-muted-foreground">
+          One encrypted credential per organization or team to access provider
+          resources. Choose what each app reads from the Databases page; account
+          keys are never injected into an app.
+        </p>
+      </header>
+      <ProviderAccounts
+        {...props}
+        className="pb-1"
+        onConnect={() => setDialog({ kind: "account" })}
+        onRotate={(account) => setDialog({ kind: "rotate", account })}
+      />
+      <ProviderDialogs
+        {...props}
+        dialog={dialog}
+        onClose={() => setDialog(null)}
+      />
     </section>
   );
 }
 function ConnectAccount({ refresh, onClose }: Props & { onClose: () => void }) {
-  const [provider, setProvider] = useState("neon"),
+  const [provider, setProvider] = useState<DatabaseAccount["provider"]>("neon"),
     action = useAction();
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -255,7 +225,9 @@ function ConnectAccount({ refresh, onClose }: Props & { onClose: () => void }) {
         <Field label="Provider">
           <Select
             value={provider}
-            onChange={(e) => setProvider(e.target.value)}
+            onChange={(e) =>
+              setProvider(e.target.value === "convex" ? "convex" : "neon")
+            }
           >
             <option value="neon">Neon</option>
             <option value="convex">Convex Cloud</option>
@@ -300,7 +272,7 @@ function ConnectAccount({ refresh, onClose }: Props & { onClose: () => void }) {
             target="_blank"
             rel="noreferrer"
           >
-            {label(provider)} ↗
+            {ENGINES[provider].label} ↗
           </a>
           . Dinghy validates access before saving. This key is never injected
           into an app.
@@ -542,7 +514,7 @@ function LinkResource(props: Props & { onClose: () => void }) {
           >
             {accounts.map((a) => (
               <option key={a.id} value={a.id}>
-                {a.name} · {label(a.provider)}
+                {a.name} · {ENGINES[a.provider].label}
               </option>
             ))}
           </Select>
@@ -735,7 +707,7 @@ function ResourceDetail({
   return (
     <Dialog
       title={r.name}
-      description={`${label(r.provider)} · ${data.projects.find((p) => p.id === r.project_id)?.name ?? "Project"}`}
+      description={`${ENGINES[r.provider].label} · ${data.projects.find((p) => p.id === r.project_id)?.name ?? "Project"}`}
       onClose={onClose}
     >
       <div className="flex flex-col gap-4">
@@ -919,7 +891,11 @@ function ResourceDetail({
                         placeholder="pc-convex-your-app"
                       />
                     </Field>
-                    <Button type="submit" size="sm" disabled={!live || action.busy}>
+                    <Button
+                      type="submit"
+                      size="sm"
+                      disabled={!live || action.busy}
+                    >
                       Verify fleet runtime
                     </Button>
                   </form>
@@ -940,7 +916,12 @@ function ResourceDetail({
                   {data.services.find((s) => s.id === b.service_id)?.name ??
                     "Removed service"}
                   <Meta className="block">{b.variable}</Meta>
-                  <a className="mt-1 inline-flex items-center gap-1 text-xs text-primary underline underline-offset-4" href={`/projects/${encodeURIComponent(r.project_id)}?service=${encodeURIComponent(b.service_id)}`}>Open service to deploy <ExternalLink className="size-3" /></a>
+                  <a
+                    className="mt-1 inline-flex items-center gap-1 text-xs text-primary underline underline-offset-4"
+                    href={`/projects/${encodeURIComponent(r.project_id)}?service=${encodeURIComponent(b.service_id)}`}
+                  >
+                    Open service to deploy <ExternalLink className="size-3" />
+                  </a>
                 </span>
                 <Button
                   size="sm"
