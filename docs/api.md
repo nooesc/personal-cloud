@@ -121,3 +121,20 @@ These routes require workspace membership. They are specific to the hosted editi
 - `DELETE /api/databases/:id/backups/:backupId`: expire one completed copy, rejected while a restore uses it. This permanently removes that backup object.
 
 Backup transfers use `/api/agent/:machineId/database-backups/:operationId/data` with a short-lived operation credential; machine inventory credentials do not grant backup access. PUT is bounded binary data with Content-Length and `x-backup-sha256`; GET is allowed only for the matching restore operation. Each successful operation requires observed scheduler completion and a verified R2 object. See [hosted backup boundaries](cloudflare-hosted.md#postgresql-backups-and-restore-copies).
+
+## Hosted database provider connections
+
+`GET /api/database-providers` returns safe account/resource metadata and service bindings. Snapshots also include `database_providers`; it is absent on unsupported control planes.
+
+- `POST /api/database-providers/accounts`: `{provider: "neon" | "convex", name, scope_id, api_key}`. Validates organization/team discovery before encrypted storage.
+- `GET /api/database-providers/accounts/:id/projects?cursor=...`: `{items, next_cursor}`.
+- `GET /api/database-providers/accounts/:id/resources?project_id=...&branch_id=...&cursor=...`: Convex cloud deployments, or Neon branches and then databases/roles. Scope is revalidated.
+- `PUT /api/database-providers/accounts/:id/credential`: `{api_key}`; validates replacement without changing app credentials.
+- `DELETE /api/database-providers/accounts/:id`: disconnect, refused while resources remain linked.
+- `POST /api/database-providers/resources`: `{project_id, name, account_id, provider_project_id, deployment}` for Convex; replace `deployment` with `{branch_id, database_name, role_name}` for Neon. Existing self-hosted Convex uses `{project_id, name, provider: "convex_self_hosted", url, admin_key}` instead.
+- `POST /api/database-providers/resources/:id/attach`: `{service_id, variable?}`. Convex supports `CONVEX_URL`, `VITE_CONVEX_URL`, `NEXT_PUBLIC_CONVEX_URL`, `PUBLIC_CONVEX_URL`. Neon always uses `DATABASE_URL`.
+- `POST /api/database-providers/resources/:id/detach`: `{service_id}`.
+- `GET /api/database-providers/resources/:id/connection`: explicit secret reveal, never cached.
+- `DELETE /api/database-providers/resources/:id`: unlink only, refused while attached. Never deletes provider data.
+
+See [connection boundaries](database-providers.md) for runtime/build behavior and live validation limits.

@@ -807,7 +807,7 @@ function App() {
           )}
           {projectId ? (
             current ? (
-              <ProjectPage
+              <ProjectPage key={`${session?.workspace.id}:${projectId}`}
                 project={current}
                 data={data}
                 overview={overview}
@@ -937,7 +937,7 @@ function App() {
             </>
           )}
           {page === "Databases" && !databaseId && (
-            <Databases data={data} refresh={refresh} live={live} onOpen={openDatabase} onNavigate={go} />
+            <Databases key={session?.workspace.id} data={data} refresh={refresh} live={live} onOpen={openDatabase} onNavigate={go} />
           )}
           {databaseId && (
             <DatabaseDetail
@@ -970,7 +970,7 @@ function App() {
             </Card>
           )}
           {page === "Settings" && (
-            <Setup
+            <Setup key={session?.workspace.id}
               data={data}
               refresh={refresh}
               live={live}

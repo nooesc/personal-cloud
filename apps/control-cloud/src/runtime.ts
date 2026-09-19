@@ -182,6 +182,7 @@ async function deleteServiceJobs(ctx: WorkspaceContext, s: Doc): Promise<void> {
       .filter((d) => d.service_id === s.id))
       ctx.store.delete("deployments", d.id);
     ctx.store.delete("bindings", s.id);
+    for (const binding of ctx.store.list("provider_bindings").filter(b => b.service_id === s.id)) ctx.store.delete("provider_bindings", binding.id);
     ctx.store.delete("services", s.id);
   });
   ctx.broadcast();
@@ -201,6 +202,7 @@ async function removeProject(
       )
   )
     fail(409, "Stop active Apple jobs before removing this project");
+  if (ctx.store.list("database_links").some((d) => d.project_id === projectId)) fail(409, "Unlink provider databases before removing this project");
   if (ctx.store.list("databases").some((d) => d.project_id === projectId))
     fail(
       409,

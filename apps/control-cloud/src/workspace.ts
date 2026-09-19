@@ -1,3 +1,4 @@
+import { handleDatabaseProviders, databaseProviderSnapshot } from "./database-providers";
 import { reconcileAppleJobs } from "./apple-nomad";
 import { handleBackups, reconcileBackups } from "./runtime/backups";
 import { handleAppleJobs } from "./apple-jobs";
@@ -151,6 +152,7 @@ export class Workspace extends DurableObject<Env> {
         reverse: true,
       }).map(publicDeployment),
       databases: this.store.list("databases").map(publicDatabase),
+      database_providers: databaseProviderSnapshot(ctx),
       // Which service reads which database; credentials stay sealed.
       database_bindings: this.store
         .list("bindings")
@@ -332,6 +334,7 @@ export class Workspace extends DurableObject<Env> {
         return json(service, 201);
       }
       return (
+        (await handleDatabaseProviders(request, ctx)) ??
         (await handleRuntime(request, ctx)) ??
         (await handleIntegrations(request, ctx)) ??
         json({ error: "Not found" }, 404)
